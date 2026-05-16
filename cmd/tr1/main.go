@@ -49,6 +49,7 @@ type config struct {
 	wordDelay     time.Duration
 	previewOut    string
 	initialPrompt string
+	verbose       bool
 }
 
 type whisperOutput struct {
@@ -138,6 +139,7 @@ func parseArgs(args []string) (config, string, error) {
 		wordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
 		previewOut:    filepath.Join("assets", "news-preview.mp3"),
 		initialPrompt: "Polski serwis informacyjny Radia TOK FM. Poprawna polska interpunkcja i nazwy własne.",
+		verbose:       boolFromEnv("TR1_VERBOSE", false),
 	}
 
 	command := "stream"
@@ -164,6 +166,7 @@ func parseArgs(args []string) (config, string, error) {
 	fs.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back live words near the unstable end of each window")
 	fs.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for ElevenLabs preview audio")
 	fs.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
+	fs.BoolVar(&cfg.verbose, "verbose", cfg.verbose, "print diagnostic status messages to stderr")
 	if err := fs.Parse(args); err != nil {
 		return cfg, command, err
 	}
@@ -196,7 +199,7 @@ func runStream(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	status("stream", "using "+streamURL)
+	status(cfg, "stream", "using "+streamURL)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -221,8 +224,8 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 	stepBytes := cfg.stepSeconds * sampleRate * bytesPerSample
 	holdbackSeconds := cfg.holdback.Seconds()
 
-	status("ffmpeg", "streaming raw 16 kHz PCM")
-	status("whisper", fmt.Sprintf("streaming %ds rolling windows every %ds", cfg.chunkSeconds, cfg.stepSeconds))
+	status(cfg, "ffmpeg", "streaming raw 16 kHz PCM")
+	status(cfg, "whisper", fmt.Sprintf("streaming %ds rolling windows every %ds", cfg.chunkSeconds, cfg.stepSeconds))
 
 	var pcm []byte
 	readBuf := make([]byte, 4096)
@@ -293,7 +296,7 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 				}
 			}
 			if resp.Error != "" {
-				status("whisper", fmt.Sprintf("window %d failed: %s", resp.Seq, resp.Error))
+				status(cfg, "whisper", fmt.Sprintf("window %d failed: %s", resp.Seq, resp.Error))
 			} else if err := printStableWords(ctx, cfg, resp, windowEnd-holdbackSeconds, &printedUntil); err != nil {
 				return err
 			}
@@ -341,7 +344,7 @@ func startPCMStream(ctx context.Context, cfg config, streamURL string) (io.Reade
 	if err != nil {
 		return nil, nil, err
 	}
-	cmd.Stderr = prefixedStderr("ffmpeg")
+	cmd.Stderr = prefixedStderr(cfg, "ffmpeg")
 	if err := cmd.Start(); err != nil {
 		return nil, nil, err
 	}
@@ -367,7 +370,7 @@ func startWhisperWorker(cfg config) (*liveWhisperWorker, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stderr = prefixedStderr("whisper")
+	cmd.Stderr = prefixedStderr(cfg, "whisper")
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -462,7 +465,7 @@ func printStableWords(ctx context.Context, cfg config, resp whisperResponse, sta
 		}
 	}
 	if printed > 0 {
-		status("whisper", fmt.Sprintf("window %d: printed %d words", resp.Seq, printed))
+		status(cfg, "whisper", fmt.Sprintf("window %d: printed %d words", resp.Seq, printed))
 	}
 	return nil
 }
@@ -594,16 +597,19 @@ func runPreview(ctx context.Context, cfg config) error {
 		args = append(args[:1], append([]string{"--voice", cfg.sagVoice}, args[1:]...)...)
 	}
 	cmd := exec.CommandContext(ctx, cfg.sagBin, args...)
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = prefixedStderr("sag")
-	status("preview", "generating "+cfg.previewOut)
+	cmd.Stdout = io.Discard
+	if cfg.verbose {
+		cmd.Stdout = os.Stderr
+	}
+	cmd.Stderr = prefixedStderr(cfg, "sag")
+	status(cfg, "preview", "generating "+cfg.previewOut)
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return err
 	}
-	status("preview", "wrote "+cfg.previewOut)
+	status(cfg, "preview", "wrote "+cfg.previewOut)
 	return nil
 }
 
@@ -617,8 +623,8 @@ func runLocalPreview(ctx context.Context, cfg config) error {
 
 	aiffPath := strings.TrimSuffix(cfg.previewOut, filepath.Ext(cfg.previewOut)) + ".aiff"
 	say := exec.CommandContext(ctx, "say", "-v", "Zosia", "-r", "178", "-o", aiffPath, referenceTranscript)
-	say.Stderr = prefixedStderr("say")
-	status("preview-local", "generating "+aiffPath)
+	say.Stderr = prefixedStderr(cfg, "say")
+	status(cfg, "preview-local", "generating "+aiffPath)
 	if err := say.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -632,8 +638,8 @@ func runLocalPreview(ctx context.Context, cfg config) error {
 		"-ac", "1", "-ar", "16000",
 		cfg.previewOut,
 	)
-	ffmpeg.Stderr = prefixedStderr("ffmpeg")
-	status("preview-local", "encoding "+cfg.previewOut)
+	ffmpeg.Stderr = prefixedStderr(cfg, "ffmpeg")
+	status(cfg, "preview-local", "encoding "+cfg.previewOut)
 	if err := ffmpeg.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -641,7 +647,7 @@ func runLocalPreview(ctx context.Context, cfg config) error {
 		return err
 	}
 
-	status("preview-local", "wrote "+cfg.previewOut)
+	status(cfg, "preview-local", "wrote "+cfg.previewOut)
 	return nil
 }
 
@@ -664,7 +670,7 @@ func runBenchmark(ctx context.Context, cfg config) error {
 
 	results := make([]benchResult, 0, len(models))
 	for _, model := range models {
-		status("benchmark", "running model "+model)
+		status(cfg, "benchmark", "running model "+model)
 		start := time.Now()
 		out, err := transcribe(ctx, cfg, model, audio)
 		if err != nil {
@@ -867,7 +873,7 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 		}
 		line := strings.TrimSpace(string(w.buf[:i]))
 		if line != "" {
-			status(w.prefix, line)
+			fmt.Fprintf(os.Stderr, "\n[%s] %s\n", w.prefix, line)
 		}
 		w.buf = w.buf[i+1:]
 	}
@@ -925,11 +931,32 @@ func durationFromEnv(name string, fallback time.Duration) time.Duration {
 	return d
 }
 
-func status(scope, msg string) {
+func boolFromEnv(name string, fallback bool) bool {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
+func status(cfg config, scope, msg string) {
+	if !cfg.verbose {
+		return
+	}
 	fmt.Fprintf(os.Stderr, "\n[%s] %s\n", scope, msg)
 }
 
-func prefixedStderr(prefix string) io.Writer {
+func prefixedStderr(cfg config, prefix string) io.Writer {
+	if !cfg.verbose {
+		return io.Discard
+	}
 	return &prefixWriter{prefix: prefix}
 }
 

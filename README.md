@@ -10,7 +10,7 @@ go run ./cmd/tr1
 
 Stop with `Ctrl+C`.
 
-The command resolves the TOK FM playlist at `http://www.tuba.fm/stream.pls?radio=10&mp3=1`, pipes raw 16 kHz PCM from `ffmpeg`, and feeds rolling audio windows into a persistent local Whisper worker. Words stream to stdout as stable word timestamps come back from Whisper.
+The command resolves the TOK FM playlist at `http://www.tuba.fm/stream.pls?radio=10&mp3=1`, pipes raw 16 kHz PCM from `ffmpeg`, and feeds rolling audio windows into a persistent local Whisper worker. By default only transcript words are printed, streaming to stdout as stable word timestamps come back from Whisper.
 
 ## Requirements
 
@@ -54,6 +54,8 @@ go run ./cmd/tr1 --model tiny --window 6 --step 1
 ```
 
 `--window` controls how much recent audio Whisper sees per request, `--step` controls how often new audio is submitted, and `--holdback` keeps words near the unstable end of a window from being printed too early. By default the live worker uses the Python interpreter from the `whisper` CLI shebang; override it with `--python-bin` or `TR1_PYTHON_BIN` if needed.
+
+Pass `--verbose` or set `TR1_VERBOSE=1` to print diagnostic status messages to stderr.
 
 ## Notes
 
