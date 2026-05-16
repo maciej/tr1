@@ -105,6 +105,14 @@ go run ./cmd/tr1 --model tiny --window 6 --step 1
 
 `--window` controls how much recent audio Whisper sees per request, `--step` controls how often new audio is submitted, and `--holdback` keeps words near the unstable end of a window from being printed too early. By default the live worker uses the Python interpreter from the `whisper` CLI shebang; override it with `--python-bin` or `TR1_PYTHON_BIN` if needed.
 
+Play the same decoded stream through system audio while transcribing:
+
+```sh
+go run ./cmd/tr1 --play
+```
+
+`--play` requires `ffplay`; override it with `--ffplay-bin` or `TR1_FFPLAY_BIN` if needed. You can also set `TR1_PLAY=1`.
+
 Pass `--verbose` or set `TR1_VERBOSE=1` to print diagnostic status messages to stderr.
 
 ## Notes

@@ -152,6 +152,23 @@ func TestPrintStableWordsUsesTerminalWriter(t *testing.T) {
 	}
 }
 
+func TestAudioMonitorCommandConsumesPCMFromStdin(t *testing.T) {
+	cmd := audioMonitorCommand(t.Context(), config{ffplayBin: "ffplay"})
+
+	got := strings.Join(cmd.Args, " ")
+	for _, want := range []string{
+		"ffplay",
+		"-f s16le",
+		"-ac 1",
+		"-ar 16000",
+		"-i pipe:0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("audio monitor args missing %q: %s", want, got)
+		}
+	}
+}
+
 func TestTerminalResizeListenerRefreshesWidthOnSIGWINCH(t *testing.T) {
 	var width atomic.Int32
 	width.Store(12)
