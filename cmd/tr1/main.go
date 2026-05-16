@@ -162,7 +162,7 @@ func defaultConfig() config {
 	return config{
 		station:       getenv("TR1_STATION", defaultStationAlias),
 		streamURL:     getenv("TR1_STREAM_URL", ""),
-		model:         getenv("TR1_MODEL", "base"),
+		model:         getenv("TR1_MODEL", "medium"),
 		models:        getenv("TR1_MODELS", "tiny,base"),
 		language:      getenv("TR1_LANGUAGE", "Polish"),
 		backend:       getenv("TR1_BACKEND", backendAuto),
