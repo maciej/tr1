@@ -1,6 +1,30 @@
+# macOS / editor state
 .DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Go build and test outputs
+bin/
+build/
+dist/
+*.exe
+*.test
+*.out
+coverage.*
+*.coverprofile
+
+# tr1 runtime artifacts
 .tr1/
-assets/news-preview.mp3
+
+# Generated benchmark and preview media
+assets/*.mp3
 assets/*.wav
 assets/*.aiff
 assets/*.json

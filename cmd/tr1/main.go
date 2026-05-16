@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +20,8 @@ import (
 	"syscall"
 	"time"
 	"unicode"
+
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -99,30 +100,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg, command, err := parseArgs(os.Args[1:])
-	if err != nil {
-		fatal(err)
-	}
-
-	switch command {
-	case "stream":
-		err = runStream(ctx, cfg)
-	case "preview":
-		err = runPreview(ctx, cfg)
-	case "preview-local":
-		err = runLocalPreview(ctx, cfg)
-	case "benchmark":
-		err = runBenchmark(ctx, cfg)
-	default:
-		err = fmt.Errorf("unknown command %q", command)
-	}
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err := newRootCommand(ctx).Execute(); err != nil && !errors.Is(err, context.Canceled) {
 		fatal(err)
 	}
 }
 
-func parseArgs(args []string) (config, string, error) {
-	cfg := config{
+func defaultConfig() config {
+	return config{
 		streamURL:     getenv("TR1_STREAM_URL", defaultPlaylistURL),
 		model:         getenv("TR1_MODEL", "base"),
 		models:        getenv("TR1_MODELS", "tiny,base"),
@@ -141,45 +125,134 @@ func parseArgs(args []string) (config, string, error) {
 		initialPrompt: "Polski serwis informacyjny Radia TOK FM. Poprawna polska interpunkcja i nazwy własne.",
 		verbose:       boolFromEnv("TR1_VERBOSE", false),
 	}
+}
 
-	command := "stream"
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		command = args[0]
-		args = args[1:]
+func newRootCommand(ctx context.Context) *cobra.Command {
+	cfg := defaultConfig()
+
+	rootCmd := &cobra.Command{
+		Use:           "tr1",
+		Short:         "Terminal TOK FM receiver and Whisper transcription loop",
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				return fmt.Errorf("unknown command %q", args[0])
+			}
+			if err := validateStreamConfig(cfg); err != nil {
+				return err
+			}
+			return runStream(ctx, cfg)
+		},
 	}
 
-	fs := flag.NewFlagSet("tr1 "+command, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL")
-	fs.StringVar(&cfg.model, "model", cfg.model, "Whisper model for live streaming")
-	fs.StringVar(&cfg.models, "models", cfg.models, "comma-separated Whisper models for benchmark")
-	fs.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
-	fs.IntVar(&cfg.chunkSeconds, "window", cfg.chunkSeconds, "rolling live transcription window in seconds")
-	fs.IntVar(&cfg.stepSeconds, "step", cfg.stepSeconds, "seconds of new audio between live Whisper requests")
-	fs.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
-	fs.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
-	fs.StringVar(&cfg.pythonBin, "python-bin", cfg.pythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
-	fs.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
-	fs.StringVar(&cfg.sagBin, "sag-bin", cfg.sagBin, "sag executable")
-	fs.StringVar(&cfg.sagVoice, "voice", cfg.sagVoice, "sag/ElevenLabs voice name or ID")
-	fs.DurationVar(&cfg.wordDelay, "word-delay", cfg.wordDelay, "delay between printed words")
-	fs.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back live words near the unstable end of each window")
-	fs.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for ElevenLabs preview audio")
-	fs.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
-	fs.BoolVar(&cfg.verbose, "verbose", cfg.verbose, "print diagnostic status messages to stderr")
-	if err := fs.Parse(args); err != nil {
-		return cfg, command, err
+	rootCmd.PersistentFlags().BoolVar(&cfg.verbose, "verbose", cfg.verbose, "print diagnostic status messages to stderr")
+	addStreamFlags(rootCmd, &cfg)
+
+	command := func(validate func(config) error, run func(context.Context, config) error) func(*cobra.Command, []string) error {
+		return func(cmd *cobra.Command, args []string) error {
+			if validate == nil {
+				return run(ctx, cfg)
+			}
+			if err := validate(cfg); err != nil {
+				return err
+			}
+			return run(ctx, cfg)
+		}
 	}
+
+	streamCmd := &cobra.Command{
+		Use:   "stream",
+		Short: "Stream TOK FM audio and print live Whisper transcription",
+		Args:  cobra.NoArgs,
+		RunE:  command(validateStreamConfig, runStream),
+	}
+	addStreamFlags(streamCmd, &cfg)
+
+	previewCmd := &cobra.Command{
+		Use:   "preview",
+		Short: "Generate synthetic news-broadcast preview audio with sag",
+		Args:  cobra.NoArgs,
+		RunE:  command(nil, runPreview),
+	}
+	addPreviewFlags(previewCmd, &cfg)
+
+	localPreviewCmd := &cobra.Command{
+		Use:   "preview-local",
+		Short: "Generate local benchmark preview audio with macOS speech synthesis",
+		Args:  cobra.NoArgs,
+		RunE:  command(nil, runLocalPreview),
+	}
+	addLocalPreviewFlags(localPreviewCmd, &cfg)
+
+	benchmarkCmd := &cobra.Command{
+		Use:   "benchmark",
+		Short: "Benchmark Whisper models against the generated preview audio",
+		Args:  cobra.NoArgs,
+		RunE:  command(nil, runBenchmark),
+	}
+	addBenchmarkFlags(benchmarkCmd, &cfg)
+
+	rootCmd.AddCommand(
+		streamCmd,
+		previewCmd,
+		localPreviewCmd,
+		benchmarkCmd,
+	)
+
+	return rootCmd
+}
+
+func addStreamFlags(cmd *cobra.Command, cfg *config) {
+	flags := cmd.Flags()
+	flags.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL")
+	flags.StringVar(&cfg.model, "model", cfg.model, "Whisper model")
+	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
+	flags.IntVar(&cfg.chunkSeconds, "window", cfg.chunkSeconds, "rolling transcription window in seconds")
+	flags.IntVar(&cfg.stepSeconds, "step", cfg.stepSeconds, "seconds of new audio between Whisper requests")
+	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
+	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
+	flags.StringVar(&cfg.pythonBin, "python-bin", cfg.pythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
+	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
+	flags.DurationVar(&cfg.wordDelay, "word-delay", cfg.wordDelay, "delay between printed words")
+	flags.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back live words near the unstable end of each window")
+	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
+}
+
+func addPreviewFlags(cmd *cobra.Command, cfg *config) {
+	flags := cmd.Flags()
+	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for ElevenLabs preview audio")
+	flags.StringVar(&cfg.sagBin, "sag-bin", cfg.sagBin, "sag executable")
+	flags.StringVar(&cfg.sagVoice, "voice", cfg.sagVoice, "sag/ElevenLabs voice name or ID")
+}
+
+func addLocalPreviewFlags(cmd *cobra.Command, cfg *config) {
+	flags := cmd.Flags()
+	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for local preview audio")
+	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
+}
+
+func addBenchmarkFlags(cmd *cobra.Command, cfg *config) {
+	flags := cmd.Flags()
+	flags.StringVar(&cfg.models, "models", cfg.models, "comma-separated Whisper models")
+	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for benchmark preview audio")
+	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
+	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
+	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
+	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
+}
+
+func validateStreamConfig(cfg config) error {
 	if cfg.chunkSeconds < 3 {
-		return cfg, command, fmt.Errorf("--window must be at least 3 seconds")
+		return fmt.Errorf("--window must be at least 3 seconds")
 	}
 	if cfg.stepSeconds < 1 {
-		return cfg, command, fmt.Errorf("--step must be at least 1 second")
+		return fmt.Errorf("--step must be at least 1 second")
 	}
 	if cfg.stepSeconds > cfg.chunkSeconds {
-		return cfg, command, fmt.Errorf("--step must be less than or equal to --window")
+		return fmt.Errorf("--step must be less than or equal to --window")
 	}
-	return cfg, command, nil
+	return nil
 }
 
 func runStream(ctx context.Context, cfg config) error {
