@@ -8,6 +8,14 @@ Terminal radio receiver and Whisper transcription loop.
 go run ./cmd/tr1
 ```
 
+For local environment variables, copy `.env.example` to `.env` and fill in local values. `.env` is ignored by git. The Make targets load it automatically:
+
+```sh
+make run
+make preview
+make benchmark
+```
+
 Stop with `Ctrl+C`.
 
 The command resolves the TOK FM playlist at `http://www.tuba.fm/stream.pls?radio=10&mp3=1`, pipes raw 16 kHz PCM from `ffmpeg`, and feeds rolling audio windows into a persistent local Whisper worker. By default only transcript words are printed, streaming to stdout as stable word timestamps come back from Whisper.
