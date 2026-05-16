@@ -1,6 +1,6 @@
 # tr1
 
-Terminal TOK FM receiver and Whisper transcription loop.
+Terminal radio receiver and Whisper transcription loop.
 
 ## Run
 
@@ -11,6 +11,27 @@ go run ./cmd/tr1
 Stop with `Ctrl+C`.
 
 The command resolves the TOK FM playlist at `http://www.tuba.fm/stream.pls?radio=10&mp3=1`, pipes raw 16 kHz PCM from `ffmpeg`, and feeds rolling audio windows into a persistent local Whisper worker. By default only transcript words are printed, streaming to stdout as stable word timestamps come back from Whisper.
+
+TokFM is the default station. Pick another station with a short alias:
+
+```sh
+go run ./cmd/tr1 rmf
+go run ./cmd/tr1 stream zet
+go run ./cmd/tr1 --station trojka
+```
+
+Supported stations:
+
+| Canonical name | Convenient aliases |
+| --- | --- |
+| TokFM | `tokfm`, `tok`, `tok-fm` |
+| Polskie Radio Jedynka | `jedynka`, `pr1`, `1` |
+| Program Drugi Polskiego Radia | `dwojka`, `dwójka`, `pr2`, `2` |
+| Trójka | `trojka`, `trójka`, `pr3`, `3` |
+| RMF FM | `rmf`, `rmffm`, `rmf-fm` |
+| Radio ZET | `zet`, `radiozet`, `radio-zet` |
+
+You can also set `TR1_STATION`, or pass `--stream-url` / `TR1_STREAM_URL` to use a custom stream URL directly.
 
 ## Requirements
 
@@ -42,7 +63,7 @@ Benchmark Whisper models against that generated preview:
 go run ./cmd/tr1 benchmark --models tiny,base
 ```
 
-Run the live stream with a specific model:
+Run the default live stream with a specific model:
 
 ```sh
 go run ./cmd/tr1 --model base

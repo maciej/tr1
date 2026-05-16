@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	defaultPlaylistURL  = "http://www.tuba.fm/stream.pls?radio=10&mp3=1"
+	defaultStationAlias = "tokfm"
 	defaultWorkDir      = ".tr1"
 	backendAuto         = "auto"
 	backendCPU          = "cpu"
@@ -39,10 +39,50 @@ const (
 		"Po południu spodziewane są konferencje prasowe oraz najnowsze dane z rynku pracy."
 )
 
+type station struct {
+	Name    string
+	URL     string
+	Aliases []string
+}
+
+var stations = []station{
+	{
+		Name:    "TokFM",
+		URL:     "http://www.tuba.fm/stream.pls?radio=10&mp3=1",
+		Aliases: []string{"tokfm", "tok", "tok-fm"},
+	},
+	{
+		Name:    "Polskie Radio Jedynka",
+		URL:     "http://stream3.polskieradio.pl:8900/listen.pls",
+		Aliases: []string{"jedynka", "pr1", "program1", "program-1", "radio1", "radio-1", "one", "1"},
+	},
+	{
+		Name:    "Program Drugi Polskiego Radia",
+		URL:     "http://stream3.polskieradio.pl:8902/listen.pls",
+		Aliases: []string{"dwojka", "dwójka", "pr2", "program2", "program-2", "drugi", "radio2", "radio-2", "two", "2"},
+	},
+	{
+		Name:    "Trójka",
+		URL:     "http://stream3.polskieradio.pl:8904/listen.pls",
+		Aliases: []string{"trojka", "trójka", "pr3", "program3", "program-3", "troika", "radio3", "radio-3", "three", "3"},
+	},
+	{
+		Name:    "RMF FM",
+		URL:     "https://rs201-krk-cyfronet.rmfstream.pl/rmf_fm",
+		Aliases: []string{"rmf", "rmffm", "rmf-fm"},
+	},
+	{
+		Name:    "Radio ZET",
+		URL:     "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO_ZET_SC",
+		Aliases: []string{"zet", "radiozet", "radio-zet"},
+	},
+}
+
 //go:embed mlx.pyproject.toml
 var embeddedPyproject string
 
 type config struct {
+	station       string
 	streamURL     string
 	model         string
 	models        string
@@ -120,7 +160,8 @@ func main() {
 
 func defaultConfig() config {
 	return config{
-		streamURL:     getenv("TR1_STREAM_URL", defaultPlaylistURL),
+		station:       getenv("TR1_STATION", defaultStationAlias),
+		streamURL:     getenv("TR1_STREAM_URL", ""),
 		model:         getenv("TR1_MODEL", "base"),
 		models:        getenv("TR1_MODELS", "tiny,base"),
 		language:      getenv("TR1_LANGUAGE", "Polish"),
@@ -137,7 +178,7 @@ func defaultConfig() config {
 		sagVoice:      getenv("TR1_SAG_VOICE", ""),
 		wordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
 		previewOut:    filepath.Join("assets", "news-preview.mp3"),
-		initialPrompt: "Polski serwis informacyjny Radia TOK FM. Poprawna polska interpunkcja i nazwy własne.",
+		initialPrompt: "Polski serwis informacyjny radiowy. Poprawna polska interpunkcja i nazwy własne.",
 		verbose:       boolFromEnv("TR1_VERBOSE", false),
 	}
 }
@@ -146,13 +187,13 @@ func newRootCommand(ctx context.Context) *cobra.Command {
 	cfg := defaultConfig()
 
 	rootCmd := &cobra.Command{
-		Use:           "tr1",
-		Short:         "Terminal TOK FM receiver and Whisper transcription loop",
+		Use:           "tr1 [station]",
+		Short:         "Terminal radio receiver and Whisper transcription loop",
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				return fmt.Errorf("unknown command %q", args[0])
+			if err := applyStationArg(&cfg, args); err != nil {
+				return err
 			}
 			if err := validateStreamConfig(cfg); err != nil {
 				return err
@@ -177,12 +218,19 @@ func newRootCommand(ctx context.Context) *cobra.Command {
 	}
 
 	streamCmd := &cobra.Command{
-		Use:   "stream",
-		Short: "Stream TOK FM audio and print live Whisper transcription",
-		Args:  cobra.NoArgs,
-		RunE:  command(validateStreamConfig, runStream),
+		Use:   "stream [station]",
+		Short: "Stream radio audio and print live Whisper transcription",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := applyStationArg(&cfg, args); err != nil {
+				return err
+			}
+			return command(validateStreamConfig, runStream)(cmd, nil)
+		},
 	}
 	addStreamFlags(streamCmd, &cfg)
+
+	stationCmds := stationAliasCommands(&cfg, command(validateStreamConfig, runStream))
 
 	previewCmd := &cobra.Command{
 		Use:   "preview",
@@ -214,13 +262,43 @@ func newRootCommand(ctx context.Context) *cobra.Command {
 		localPreviewCmd,
 		benchmarkCmd,
 	)
+	rootCmd.AddCommand(stationCmds...)
 
 	return rootCmd
 }
 
+func stationAliasCommands(cfg *config, run func(*cobra.Command, []string) error) []*cobra.Command {
+	seen := map[string]bool{}
+	var out []*cobra.Command
+	for _, s := range stations {
+		for _, alias := range s.Aliases {
+			if alias == "" || seen[alias] {
+				continue
+			}
+			seen[alias] = true
+			alias := alias
+			cmd := &cobra.Command{
+				Use:    alias,
+				Hidden: true,
+				Args:   cobra.NoArgs,
+				RunE: func(cmd *cobra.Command, args []string) error {
+					if !cmd.Flags().Changed("station") {
+						cfg.station = alias
+					}
+					return run(cmd, args)
+				},
+			}
+			addStreamFlags(cmd, cfg)
+			out = append(out, cmd)
+		}
+	}
+	return out
+}
+
 func addStreamFlags(cmd *cobra.Command, cfg *config) {
 	flags := cmd.Flags()
-	flags.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL")
+	flags.StringVarP(&cfg.station, "station", "s", cfg.station, "station alias or canonical name ("+stationHelp()+")")
+	flags.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL; overrides --station")
 	flags.StringVar(&cfg.model, "model", cfg.model, "Whisper model")
 	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
 	flags.StringVar(&cfg.backend, "backend", cfg.backend, "transcription backend: auto, cpu, or mlx")
@@ -286,10 +364,15 @@ func runStream(ctx context.Context, cfg config) error {
 		return err
 	}
 
-	streamURL, err := resolveStreamURL(ctx, cfg.streamURL)
+	selectedStation, stationURL, err := streamSelection(cfg)
 	if err != nil {
 		return err
 	}
+	streamURL, err := resolveStreamURL(ctx, stationURL)
+	if err != nil {
+		return err
+	}
+	status(cfg, "station", selectedStation)
 	status(cfg, "stream", "using "+streamURL)
 	status(cfg, "backend", backend)
 
@@ -924,6 +1007,77 @@ func runBenchmark(ctx context.Context, cfg config) error {
 		fmt.Printf("%s\t%s\t%.3f\t%d\t%s\t%.3f\t%s\n", r.Backend, r.Model, r.WER, r.Words, r.Duration.Round(time.Millisecond), r.RTF, oneLine(r.Text))
 	}
 	return nil
+}
+
+func applyStationArg(cfg *config, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("expected at most one station, got %d", len(args))
+	}
+	cfg.station = args[0]
+	return nil
+}
+
+func streamSelection(cfg config) (string, string, error) {
+	if cfg.streamURL != "" {
+		return "custom stream", cfg.streamURL, nil
+	}
+	selected, err := lookupStation(cfg.station)
+	if err != nil {
+		return "", "", err
+	}
+	return selected.Name, selected.URL, nil
+}
+
+func lookupStation(query string) (station, error) {
+	key := stationKey(query)
+	if key == "" {
+		key = stationKey(defaultStationAlias)
+	}
+	for _, s := range stations {
+		if stationKey(s.Name) == key {
+			return s, nil
+		}
+		for _, alias := range s.Aliases {
+			if stationKey(alias) == key {
+				return s, nil
+			}
+		}
+	}
+	return station{}, fmt.Errorf("unknown station %q (try one of: %s)", query, stationHelp())
+}
+
+func stationHelp() string {
+	names := make([]string, 0, len(stations))
+	for _, s := range stations {
+		names = append(names, s.Aliases[0])
+	}
+	return strings.Join(names, ", ")
+}
+
+func stationKey(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	replacer := strings.NewReplacer(
+		"ą", "a",
+		"ć", "c",
+		"ę", "e",
+		"ł", "l",
+		"ń", "n",
+		"ó", "o",
+		"ś", "s",
+		"ż", "z",
+		"ź", "z",
+	)
+	s = replacer.Replace(s)
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func resolveStreamURL(ctx context.Context, rawURL string) (string, error) {
