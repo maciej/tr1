@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"os"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+)
 
 func TestLookupStationAliases(t *testing.T) {
 	tests := map[string]string{
@@ -68,4 +75,106 @@ func TestLookupFixtureAliases(t *testing.T) {
 			t.Fatalf("lookupFixture(%q) = %q, want %q", query, got.Name, want)
 		}
 	}
+}
+
+func TestTerminalWordWriterWrapsBeforeSplittingWord(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 17)
+
+	for _, word := range []string{"znów", "furmanko", "tam"} {
+		if err := writer.writeWord(word, true); err != nil {
+			t.Fatalf("writeWord(%q) returned error: %v", word, err)
+		}
+	}
+
+	want := "znów furmanko \ntam "
+	if got := out.String(); got != want {
+		t.Fatalf("wrapped output = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalWordWriterDoesNotWrapWhenWordFitsExactly(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 14)
+
+	for _, word := range []string{"znów", "furmanko"} {
+		if err := writer.writeWord(word, true); err != nil {
+			t.Fatalf("writeWord(%q) returned error: %v", word, err)
+		}
+	}
+
+	want := "znów furmanko "
+	if got := out.String(); got != want {
+		t.Fatalf("wrapped output = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalWordWriterLeavesPipedOutputUnwrapped(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 0)
+
+	for _, word := range []string{"znów", "furmanko", "tam"} {
+		if err := writer.writeWord(word, true); err != nil {
+			t.Fatalf("writeWord(%q) returned error: %v", word, err)
+		}
+	}
+
+	want := "znów furmanko tam "
+	if got := out.String(); got != want {
+		t.Fatalf("piped output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintStableWordsUsesTerminalWriter(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 17)
+	printedUntil := 0.0
+
+	resp := whisperResponse{
+		Seq:      1,
+		Offset:   0,
+		Duration: 10,
+		Words: []whisperWord{
+			{Word: " znów", Start: 0, End: 1},
+			{Word: " furmanko", Start: 1, End: 2},
+			{Word: " tam", Start: 2, End: 3},
+		},
+	}
+
+	if err := printStableWords(t.Context(), config{}, writer, resp, 10, &printedUntil); err != nil {
+		t.Fatalf("printStableWords returned error: %v", err)
+	}
+
+	want := "znów furmanko \ntam "
+	if got := out.String(); got != want {
+		t.Fatalf("printed output = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalResizeListenerRefreshesWidthOnSIGWINCH(t *testing.T) {
+	var width atomic.Int32
+	width.Store(12)
+	columns := &terminalColumns{
+		enabled: true,
+		provider: func(uintptr) (int, bool) {
+			return int(width.Load()), true
+		},
+	}
+	columns.refresh()
+
+	signals := make(chan os.Signal, 1)
+	stop := startTerminalResizeListener(t.Context(), columns, signals)
+	defer stop()
+
+	width.Store(24)
+	signals <- syscall.SIGWINCH
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := columns.current(); got == 24 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("terminal width = %d, want 24 after SIGWINCH", columns.current())
 }
