@@ -51,3 +51,21 @@ func TestLookupStationUnknown(t *testing.T) {
 		t.Fatal("lookupStation returned nil error for unknown station")
 	}
 }
+
+func TestLookupFixtureAliases(t *testing.T) {
+	tests := map[string]string{
+		"":                  "news-preview",
+		"news-preview":      "news-preview",
+		"biebrza-broadcast": "biebrza-broadcast",
+	}
+
+	for query, want := range tests {
+		got, err := lookupFixture(query)
+		if err != nil {
+			t.Fatalf("lookupFixture(%q) returned error: %v", query, err)
+		}
+		if got.Name != want {
+			t.Fatalf("lookupFixture(%q) = %q, want %q", query, got.Name, want)
+		}
+	}
+}

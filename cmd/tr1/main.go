@@ -33,11 +33,27 @@ const (
 	backendCPU          = "cpu"
 	backendMLX          = "mlx"
 	defaultMLXModelRepo = "mlx-community/whisper-%s-mlx"
-	referenceTranscript = "Dzień dobry, to jest specjalny serwis informacyjny. " +
-		"W Warszawie rozpoczęły się rozmowy o nowych inwestycjach w energetykę i transport publiczny. " +
-		"Rząd zapowiada dodatkowe środki dla samorządów, a ekonomiści podkreślają znaczenie stabilnych cen. " +
-		"Po południu spodziewane są konferencje prasowe oraz najnowsze dane z rynku pracy."
+	defaultFixtureName  = "news-preview"
 )
+
+type benchmarkFixture struct {
+	Name           string
+	TranscriptPath string
+	AudioPath      string
+}
+
+var benchmarkFixtures = []benchmarkFixture{
+	{
+		Name:           "news-preview",
+		TranscriptPath: filepath.Join("fixtures", "news-preview.txt"),
+		AudioPath:      filepath.Join("assets", "news-preview.mp3"),
+	},
+	{
+		Name:           "biebrza-broadcast",
+		TranscriptPath: filepath.Join("fixtures", "biebrza-broadcast.txt"),
+		AudioPath:      filepath.Join("assets", "biebrza-broadcast.mp3"),
+	},
+}
 
 type station struct {
 	Name    string
@@ -98,6 +114,7 @@ type config struct {
 	ffmpegBin     string
 	sagBin        string
 	sagVoice      string
+	fixture       string
 	wordDelay     time.Duration
 	previewOut    string
 	initialPrompt string
@@ -176,8 +193,9 @@ func defaultConfig() config {
 		ffmpegBin:     getenv("TR1_FFMPEG_BIN", "ffmpeg"),
 		sagBin:        getenv("TR1_SAG_BIN", "sag"),
 		sagVoice:      getenv("TR1_SAG_VOICE", ""),
+		fixture:       getenv("TR1_FIXTURE", defaultFixtureName),
 		wordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
-		previewOut:    filepath.Join("assets", "news-preview.mp3"),
+		previewOut:    "",
 		initialPrompt: "Polski serwis informacyjny radiowy. Poprawna polska interpunkcja i nazwy własne.",
 		verbose:       boolFromEnv("TR1_VERBOSE", false),
 	}
@@ -316,6 +334,7 @@ func addStreamFlags(cmd *cobra.Command, cfg *config) {
 
 func addPreviewFlags(cmd *cobra.Command, cfg *config) {
 	flags := cmd.Flags()
+	flags.StringVar(&cfg.fixture, "fixture", cfg.fixture, "benchmark fixture name ("+fixtureHelp()+")")
 	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for ElevenLabs preview audio")
 	flags.StringVar(&cfg.sagBin, "sag-bin", cfg.sagBin, "sag executable")
 	flags.StringVar(&cfg.sagVoice, "voice", cfg.sagVoice, "sag/ElevenLabs voice name or ID")
@@ -323,12 +342,14 @@ func addPreviewFlags(cmd *cobra.Command, cfg *config) {
 
 func addLocalPreviewFlags(cmd *cobra.Command, cfg *config) {
 	flags := cmd.Flags()
+	flags.StringVar(&cfg.fixture, "fixture", cfg.fixture, "benchmark fixture name ("+fixtureHelp()+")")
 	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for local preview audio")
 	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
 }
 
 func addBenchmarkFlags(cmd *cobra.Command, cfg *config) {
 	flags := cmd.Flags()
+	flags.StringVar(&cfg.fixture, "fixture", cfg.fixture, "benchmark fixture name ("+fixtureHelp()+")")
 	flags.StringVar(&cfg.models, "models", cfg.models, "comma-separated Whisper models")
 	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for benchmark preview audio")
 	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
@@ -878,6 +899,13 @@ print("TR1_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
 }
 
 func runPreview(ctx context.Context, cfg config) error {
+	fixture, transcript, err := loadFixture(cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.previewOut == "" {
+		cfg.previewOut = fixture.AudioPath
+	}
 	if err := requireBinaries(cfg.sagBin); err != nil {
 		return err
 	}
@@ -897,7 +925,7 @@ func runPreview(ctx context.Context, cfg config) error {
 		"--similarity", "0.78",
 		"--speaker-boost",
 		"--output", cfg.previewOut,
-		referenceTranscript,
+		transcript,
 	}
 	if cfg.sagVoice != "" {
 		args = append(args[:1], append([]string{"--voice", cfg.sagVoice}, args[1:]...)...)
@@ -920,6 +948,13 @@ func runPreview(ctx context.Context, cfg config) error {
 }
 
 func runLocalPreview(ctx context.Context, cfg config) error {
+	fixture, transcript, err := loadFixture(cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.previewOut == "" {
+		cfg.previewOut = fixture.AudioPath
+	}
 	if err := requireBinaries("say", cfg.ffmpegBin); err != nil {
 		return err
 	}
@@ -928,7 +963,7 @@ func runLocalPreview(ctx context.Context, cfg config) error {
 	}
 
 	aiffPath := strings.TrimSuffix(cfg.previewOut, filepath.Ext(cfg.previewOut)) + ".aiff"
-	say := exec.CommandContext(ctx, "say", "-v", "Zosia", "-r", "178", "-o", aiffPath, referenceTranscript)
+	say := exec.CommandContext(ctx, "say", "-v", "Zosia", "-r", "178", "-o", aiffPath, transcript)
 	say.Stderr = prefixedStderr(cfg, "say")
 	status(cfg, "preview-local", "generating "+aiffPath)
 	if err := say.Run(); err != nil {
@@ -961,13 +996,20 @@ func runBenchmark(ctx context.Context, cfg config) error {
 	if err := validateBackend(cfg.backend); err != nil {
 		return err
 	}
+	fixture, transcript, err := loadFixture(cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.previewOut == "" {
+		cfg.previewOut = fixture.AudioPath
+	}
 	backend, err := prepareBackend(ctx, &cfg)
 	if err != nil {
 		return err
 	}
 	audio := cfg.previewOut
 	if _, err := os.Stat(audio); err != nil {
-		return fmt.Errorf("%s not found; run `go run ./cmd/tr1 preview` first", audio)
+		return fmt.Errorf("%s not found; run `go run ./cmd/tr1 preview --fixture %s` first", audio, fixture.Name)
 	}
 	if err := ensureDirs(cfg); err != nil {
 		return err
@@ -989,7 +1031,7 @@ func runBenchmark(ctx context.Context, cfg config) error {
 		}
 		duration := time.Since(start)
 		text := normalizeText(out.Text)
-		ref := normalizeText(referenceTranscript)
+		ref := normalizeText(transcript)
 		result := benchResult{
 			Backend:  backend,
 			Model:    model,
@@ -1007,6 +1049,43 @@ func runBenchmark(ctx context.Context, cfg config) error {
 		fmt.Printf("%s\t%s\t%.3f\t%d\t%s\t%.3f\t%s\n", r.Backend, r.Model, r.WER, r.Words, r.Duration.Round(time.Millisecond), r.RTF, oneLine(r.Text))
 	}
 	return nil
+}
+
+func loadFixture(cfg config) (benchmarkFixture, string, error) {
+	fixture, err := lookupFixture(cfg.fixture)
+	if err != nil {
+		return benchmarkFixture{}, "", err
+	}
+	data, err := os.ReadFile(fixture.TranscriptPath)
+	if err != nil {
+		return benchmarkFixture{}, "", err
+	}
+	transcript := strings.TrimSpace(string(data))
+	if transcript == "" {
+		return benchmarkFixture{}, "", fmt.Errorf("%s is empty", fixture.TranscriptPath)
+	}
+	return fixture, transcript, nil
+}
+
+func lookupFixture(query string) (benchmarkFixture, error) {
+	key := stationKey(query)
+	if key == "" {
+		key = stationKey(defaultFixtureName)
+	}
+	for _, fixture := range benchmarkFixtures {
+		if stationKey(fixture.Name) == key {
+			return fixture, nil
+		}
+	}
+	return benchmarkFixture{}, fmt.Errorf("unknown fixture %q (try one of: %s)", query, fixtureHelp())
+}
+
+func fixtureHelp() string {
+	names := make([]string, 0, len(benchmarkFixtures))
+	for _, fixture := range benchmarkFixtures {
+		names = append(names, fixture.Name)
+	}
+	return strings.Join(names, ", ")
 }
 
 func applyStationArg(cfg *config, args []string) error {

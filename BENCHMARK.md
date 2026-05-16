@@ -1,5 +1,12 @@
 # Benchmark
 
+Fixtures live in `fixtures/*.txt`; generated audio lives in `assets/*.mp3`. Select one with `--fixture`.
+
+| Fixture | Text | Default audio |
+| --- | --- | --- |
+| `news-preview` | `fixtures/news-preview.txt` | `assets/news-preview.mp3` |
+| `biebrza-broadcast` | `fixtures/biebrza-broadcast.txt` | `assets/biebrza-broadcast.mp3` |
+
 Fixture: `assets/news-preview.mp3`, generated locally with `go run ./cmd/tr1 preview-local` because the supplied short-lived ElevenLabs key returned `401 Unauthorized` when `sag` tried to call ElevenLabs.
 
 Audio duration:

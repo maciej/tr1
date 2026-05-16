@@ -59,6 +59,13 @@ Generate the synthetic news-broadcast preview audio with ElevenLabs through `sag
 ELEVENLABS_API_KEY=... go run ./cmd/tr1 preview
 ```
 
+Benchmark fixtures are selected by name. The default fixture is `news-preview`; the longer Biebrza broadcast fixture is `biebrza-broadcast`:
+
+```sh
+ELEVENLABS_API_KEY=... go run ./cmd/tr1 preview --fixture biebrza-broadcast --voice <voice-name-or-id>
+go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --models tiny,base,small,medium
+```
+
 If the ElevenLabs key is unavailable, create a local benchmark fixture with macOS speech synthesis:
 
 ```sh
