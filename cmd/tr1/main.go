@@ -30,13 +30,15 @@ import (
 )
 
 const (
-	defaultStationAlias = "tokfm"
-	defaultWorkDir      = ".tr1"
-	backendAuto         = "auto"
-	backendCPU          = "cpu"
-	backendMLX          = "mlx"
-	defaultMLXModelRepo = "mlx-community/whisper-%s-mlx"
-	defaultFixtureName  = "biebrza-broadcast"
+	defaultStationAlias  = "tokfm"
+	defaultWorkDir       = ".tr1"
+	backendAuto          = "auto"
+	backendCPU           = "cpu"
+	backendMLX           = "mlx"
+	benchmarkModeWhole   = "whole"
+	benchmarkModeChunked = "chunked"
+	defaultMLXModelRepo  = "mlx-community/whisper-%s-mlx"
+	defaultFixtureName   = "biebrza-broadcast"
 )
 
 type benchmarkFixture struct {
@@ -120,6 +122,7 @@ type config struct {
 	fixture       string
 	wordDelay     time.Duration
 	previewOut    string
+	benchmarkMode string
 	initialPrompt string
 	verbose       bool
 }
@@ -199,6 +202,7 @@ func defaultConfig() config {
 		fixture:       getenv("TR1_FIXTURE", defaultFixtureName),
 		wordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
 		previewOut:    "",
+		benchmarkMode: getenv("TR1_BENCHMARK_MODE", benchmarkModeWhole),
 		initialPrompt: "Polski serwis informacyjny radiowy. Poprawna polska interpunkcja i nazwy własne.",
 		verbose:       boolFromEnv("TR1_VERBOSE", false),
 	}
@@ -388,6 +392,10 @@ func addBenchmarkFlags(cmd *cobra.Command, cfg *config) {
 	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
 	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
 	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
+	flags.StringVar(&cfg.benchmarkMode, "mode", cfg.benchmarkMode, "benchmark mode: whole or chunked")
+	flags.IntVar(&cfg.chunkSeconds, "window", cfg.chunkSeconds, "rolling transcription window in seconds for chunked mode")
+	flags.IntVar(&cfg.stepSeconds, "step", cfg.stepSeconds, "seconds of new audio between Whisper requests for chunked mode")
+	flags.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back words near the unstable end of each window for chunked mode")
 }
 
 func validateStreamConfig(cfg config) error {
@@ -533,7 +541,7 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 		}
 
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
+			if errors.Is(readErr, io.EOF) || isClosedPipeError(readErr) {
 				break
 			}
 			if ctx.Err() != nil {
@@ -636,6 +644,9 @@ func (w *liveWhisperWorker) drain() ([]whisperResponse, error) {
 		case resp := <-w.results:
 			out = append(out, resp)
 		case err := <-w.errors:
+			if isClosedPipeError(err) {
+				return out, nil
+			}
 			return out, err
 		default:
 			return out, nil
@@ -654,8 +665,15 @@ func (w *liveWhisperWorker) read(stdout io.Reader) {
 		w.results <- resp
 	}
 	if err := scanner.Err(); err != nil {
+		if isClosedPipeError(err) {
+			return
+		}
 		w.errors <- err
 	}
+}
+
+func isClosedPipeError(err error) bool {
+	return err != nil && (errors.Is(err, os.ErrClosed) || strings.Contains(err.Error(), "file already closed"))
 }
 
 func (w *liveWhisperWorker) close() {
@@ -860,6 +878,22 @@ func isWideRune(r rune) bool {
 		(r >= 0xFE30 && r <= 0xFE6F) ||
 		(r >= 0xFF00 && r <= 0xFF60) ||
 		(r >= 0xFFE0 && r <= 0xFFE6)
+}
+
+func appendStableWords(resp whisperResponse, stableUntil float64, printedUntil *float64, out *[]string) {
+	for _, word := range resp.Words {
+		start := resp.Offset + word.Start
+		end := resp.Offset + word.End
+		if end <= *printedUntil+0.05 || start < *printedUntil-0.25 || end > stableUntil {
+			continue
+		}
+		text := strings.TrimSpace(word.Word)
+		if text == "" {
+			continue
+		}
+		*out = append(*out, text)
+		*printedUntil = end
+	}
 }
 
 func liveWhisperWorkerScript() string {
@@ -1186,6 +1220,9 @@ func runBenchmark(ctx context.Context, cfg config) error {
 	if err := validateBackend(cfg.backend); err != nil {
 		return err
 	}
+	if err := validateBenchmarkConfig(cfg); err != nil {
+		return err
+	}
 	fixture, transcript, err := loadFixture(cfg)
 	if err != nil {
 		return err
@@ -1215,7 +1252,7 @@ func runBenchmark(ctx context.Context, cfg config) error {
 	for _, model := range models {
 		status(cfg, "benchmark", "running "+backend+" model "+model)
 		start := time.Now()
-		out, err := transcribe(ctx, cfg, model, audio)
+		out, err := transcribeForBenchmark(ctx, cfg, model, audio)
 		if err != nil {
 			return err
 		}
@@ -1239,6 +1276,179 @@ func runBenchmark(ctx context.Context, cfg config) error {
 		fmt.Printf("%s\t%s\t%.3f\t%d\t%s\t%.3f\t%s\n", r.Backend, r.Model, r.WER, r.Words, r.Duration.Round(time.Millisecond), r.RTF, oneLine(r.Text))
 	}
 	return nil
+}
+
+func validateBenchmarkConfig(cfg config) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.benchmarkMode)) {
+	case benchmarkModeWhole, benchmarkModeChunked:
+	default:
+		return fmt.Errorf("--mode must be one of: whole, chunked")
+	}
+	if strings.ToLower(strings.TrimSpace(cfg.benchmarkMode)) == benchmarkModeChunked {
+		return validateStreamConfig(cfg)
+	}
+	return nil
+}
+
+func transcribeForBenchmark(ctx context.Context, cfg config, model, audioPath string) (whisperOutput, error) {
+	if strings.ToLower(strings.TrimSpace(cfg.benchmarkMode)) == benchmarkModeChunked {
+		chunkedCfg := cfg
+		chunkedCfg.model = model
+		chunkedCfg.wordDelay = 0
+		text, err := transcribeChunkedFile(ctx, chunkedCfg, audioPath)
+		if err != nil {
+			return whisperOutput{}, err
+		}
+		return whisperOutput{Text: text}, nil
+	}
+	return transcribe(ctx, cfg, model, audioPath)
+}
+
+func transcribeChunkedFile(ctx context.Context, cfg config, audioPath string) (string, error) {
+	ffmpegStdout, ffmpegDone, err := startPCMStream(ctx, cfg, audioPath)
+	if err != nil {
+		return "", err
+	}
+	worker, err := startWhisperWorker(cfg)
+	if err != nil {
+		return "", err
+	}
+	defer worker.close()
+
+	const sampleRate = 16000
+	const bytesPerSample = 2
+	windowBytes := cfg.chunkSeconds * sampleRate * bytesPerSample
+	stepBytes := cfg.stepSeconds * sampleRate * bytesPerSample
+	holdbackSeconds := cfg.holdback.Seconds()
+
+	var pcm []byte
+	readBuf := make([]byte, 4096)
+	nextSubmit := stepBytes
+	seq := 0
+	totalBytes := 0
+	printedUntil := 0.0
+	var words []string
+	pending := map[int]whisperResponse{}
+	nextPrintSeq := 1
+
+	submit := func() error {
+		seq++
+		window := pcm
+		if len(window) > windowBytes {
+			window = window[len(window)-windowBytes:]
+		}
+		offsetBytes := totalBytes - len(window)
+		req := whisperRequest{
+			Seq:           seq,
+			Offset:        float64(offsetBytes) / float64(sampleRate*bytesPerSample),
+			Duration:      float64(len(window)) / float64(sampleRate*bytesPerSample),
+			SampleRate:    sampleRate,
+			PCM16Base64:   base64.StdEncoding.EncodeToString(window),
+			InitialPrompt: cfg.initialPrompt,
+		}
+		if err := worker.send(req); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		if len(pcm) > windowBytes {
+			pcm = append([]byte(nil), pcm[len(pcm)-windowBytes:]...)
+		}
+		return nil
+	}
+
+	flushReady := func() error {
+		drained, err := worker.drain()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		for _, resp := range drained {
+			pending[resp.Seq] = resp
+		}
+		for {
+			resp, ok := pending[nextPrintSeq]
+			if !ok {
+				break
+			}
+			delete(pending, nextPrintSeq)
+			windowEnd := resp.Offset + resp.Duration
+			if len(resp.Words) == 0 && strings.TrimSpace(resp.Text) != "" {
+				fields := strings.Fields(resp.Text)
+				step := resp.Duration / float64(len(fields)+1)
+				for i, w := range fields {
+					end := step * float64(i+1)
+					resp.Words = append(resp.Words, whisperWord{Word: w, Start: end - step, End: end})
+				}
+			}
+			if resp.Error != "" {
+				return fmt.Errorf("window %d failed: %s", resp.Seq, resp.Error)
+			}
+			appendStableWords(resp, windowEnd-holdbackSeconds, &printedUntil, &words)
+			nextPrintSeq++
+		}
+		return nil
+	}
+
+	for {
+		n, readErr := ffmpegStdout.Read(readBuf)
+		if n > 0 {
+			pcm = append(pcm, readBuf[:n]...)
+			totalBytes += n
+			for totalBytes >= nextSubmit && len(pcm) >= minInt(windowBytes, totalBytes) {
+				if err := submit(); err != nil {
+					return "", err
+				}
+				nextSubmit += stepBytes
+			}
+		}
+		if err := flushReady(); err != nil {
+			return "", err
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) || isClosedPipeError(readErr) {
+				break
+			}
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			return "", readErr
+		}
+	}
+	if totalBytes > 0 && (seq == 0 || totalBytes > nextSubmit-stepBytes) {
+		if err := submit(); err != nil {
+			return "", err
+		}
+	}
+	_ = worker.stdin.Close()
+	for nextPrintSeq <= seq {
+		if err := flushReady(); err != nil {
+			return "", err
+		}
+		if nextPrintSeq > seq {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case err := <-ffmpegDone:
+			if err != nil && !errors.Is(err, context.Canceled) {
+				return "", err
+			}
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	select {
+	case err := <-ffmpegDone:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			return "", err
+		}
+	default:
+	}
+	return strings.Join(words, " "), nil
 }
 
 func loadFixture(cfg config) (benchmarkFixture, string, error) {
