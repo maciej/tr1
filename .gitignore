@@ -9,6 +9,7 @@
 .env
 .env.*
 !.env.example
+.venv/
 
 # Go build and test outputs
 bin/

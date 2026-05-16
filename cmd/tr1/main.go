@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,6 +29,10 @@ import (
 const (
 	defaultStationAlias = "tokfm"
 	defaultWorkDir      = ".tr1"
+	backendAuto         = "auto"
+	backendCPU          = "cpu"
+	backendMLX          = "mlx"
+	defaultMLXModelRepo = "mlx-community/whisper-%s-mlx"
 	referenceTranscript = "Dzień dobry, to jest specjalny serwis informacyjny. " +
 		"W Warszawie rozpoczęły się rozmowy o nowych inwestycjach w energetykę i transport publiczny. " +
 		"Rząd zapowiada dodatkowe środki dla samorządów, a ekonomiści podkreślają znaczenie stabilnych cen. " +
@@ -72,17 +78,22 @@ var stations = []station{
 	},
 }
 
+//go:embed mlx.pyproject.toml
+var embeddedPyproject string
+
 type config struct {
 	station       string
 	streamURL     string
 	model         string
 	models        string
 	language      string
+	backend       string
 	chunkSeconds  int
 	stepSeconds   int
 	holdback      time.Duration
 	workDir       string
 	whisperBin    string
+	uvBin         string
 	pythonBin     string
 	ffmpegBin     string
 	sagBin        string
@@ -129,10 +140,12 @@ type whisperResponse struct {
 }
 
 type benchResult struct {
+	Backend  string
 	Model    string
 	WER      float64
 	Words    int
 	Duration time.Duration
+	RTF      float64
 	Text     string
 }
 
@@ -152,11 +165,13 @@ func defaultConfig() config {
 		model:         getenv("TR1_MODEL", "base"),
 		models:        getenv("TR1_MODELS", "tiny,base"),
 		language:      getenv("TR1_LANGUAGE", "Polish"),
+		backend:       getenv("TR1_BACKEND", backendAuto),
 		chunkSeconds:  intFromEnv("TR1_CHUNK_SECONDS", 12),
 		stepSeconds:   intFromEnv("TR1_STEP_SECONDS", 3),
 		holdback:      durationFromEnv("TR1_HOLDBACK", 1500*time.Millisecond),
 		workDir:       getenv("TR1_WORKDIR", defaultWorkDir),
 		whisperBin:    getenv("TR1_WHISPER_BIN", "whisper"),
+		uvBin:         getenv("TR1_UV_BIN", "uv"),
 		pythonBin:     getenv("TR1_PYTHON_BIN", ""),
 		ffmpegBin:     getenv("TR1_FFMPEG_BIN", "ffmpeg"),
 		sagBin:        getenv("TR1_SAG_BIN", "sag"),
@@ -286,10 +301,12 @@ func addStreamFlags(cmd *cobra.Command, cfg *config) {
 	flags.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL; overrides --station")
 	flags.StringVar(&cfg.model, "model", cfg.model, "Whisper model")
 	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
+	flags.StringVar(&cfg.backend, "backend", cfg.backend, "transcription backend: auto, cpu, or mlx")
 	flags.IntVar(&cfg.chunkSeconds, "window", cfg.chunkSeconds, "rolling transcription window in seconds")
 	flags.IntVar(&cfg.stepSeconds, "step", cfg.stepSeconds, "seconds of new audio between Whisper requests")
 	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
 	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
+	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
 	flags.StringVar(&cfg.pythonBin, "python-bin", cfg.pythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
 	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
 	flags.DurationVar(&cfg.wordDelay, "word-delay", cfg.wordDelay, "delay between printed words")
@@ -315,12 +332,17 @@ func addBenchmarkFlags(cmd *cobra.Command, cfg *config) {
 	flags.StringVar(&cfg.models, "models", cfg.models, "comma-separated Whisper models")
 	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for benchmark preview audio")
 	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
+	flags.StringVar(&cfg.backend, "backend", cfg.backend, "transcription backend: auto, cpu, or mlx")
 	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
+	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
 	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
 	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
 }
 
 func validateStreamConfig(cfg config) error {
+	if err := validateBackend(cfg.backend); err != nil {
+		return err
+	}
 	if cfg.chunkSeconds < 3 {
 		return fmt.Errorf("--window must be at least 3 seconds")
 	}
@@ -334,14 +356,10 @@ func validateStreamConfig(cfg config) error {
 }
 
 func runStream(ctx context.Context, cfg config) error {
-	if err := requireBinaries(cfg.ffmpegBin, cfg.whisperBin); err != nil {
-		return err
-	}
-	pythonBin, err := whisperPythonBin(cfg)
+	backend, err := prepareBackend(ctx, &cfg)
 	if err != nil {
 		return err
 	}
-	cfg.pythonBin = pythonBin
 	if err := ensureDirs(cfg); err != nil {
 		return err
 	}
@@ -356,6 +374,7 @@ func runStream(ctx context.Context, cfg config) error {
 	}
 	status(cfg, "station", selectedStation)
 	status(cfg, "stream", "using "+streamURL)
+	status(cfg, "backend", backend)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -516,7 +535,13 @@ func startPCMStream(ctx context.Context, cfg config, streamURL string) (io.Reade
 }
 
 func startWhisperWorker(cfg config) (*liveWhisperWorker, error) {
-	args := []string{"-u", "-c", liveWhisperWorkerScript(), cfg.model, filepath.Join(cfg.workDir, "models"), cfg.language}
+	script := liveWhisperWorkerScript()
+	model := cfg.model
+	if cfg.backend == backendMLX {
+		script = liveMLXWorkerScript()
+		model = mlxModelRef(cfg.model)
+	}
+	args := []string{"-u", "-c", script, model, filepath.Join(cfg.workDir, "models"), cfg.language}
 	cmd := exec.Command(cfg.pythonBin, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -685,7 +710,68 @@ for line in sys.stdin:
 `
 }
 
+func liveMLXWorkerScript() string {
+	return `
+import base64
+import json
+import sys
+import traceback
+
+import numpy as np
+import mlx_whisper
+
+model_name = sys.argv[1]
+language = sys.argv[3]
+
+for line in sys.stdin:
+    try:
+        req = json.loads(line)
+        raw = base64.b64decode(req["pcm16_b64"])
+        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        result = mlx_whisper.transcribe(
+            audio,
+            path_or_hf_repo=model_name,
+            language=language,
+            task="transcribe",
+            word_timestamps=True,
+            verbose=False,
+            condition_on_previous_text=False,
+            hallucination_silence_threshold=1.0,
+            initial_prompt=req.get("initial_prompt") or None,
+        )
+        words = []
+        for segment in result.get("segments", []):
+            for word in segment.get("words") or []:
+                words.append({
+                    "word": word.get("word", ""),
+                    "start": float(word.get("start", 0.0)),
+                    "end": float(word.get("end", 0.0)),
+                    "probability": float(word.get("probability", 0.0)),
+                })
+        print(json.dumps({
+            "seq": req["seq"],
+            "offset": req["offset"],
+            "duration": req["duration"],
+            "text": result.get("text", ""),
+            "words": words,
+        }, ensure_ascii=False), flush=True)
+    except Exception as exc:
+        print(json.dumps({
+            "seq": req.get("seq", 0) if "req" in locals() else 0,
+            "offset": req.get("offset", 0.0) if "req" in locals() else 0.0,
+            "duration": req.get("duration", 0.0) if "req" in locals() else 0.0,
+            "error": str(exc),
+            "text": "",
+            "words": [],
+        }), flush=True)
+        traceback.print_exc(file=sys.stderr)
+`
+}
+
 func transcribe(ctx context.Context, cfg config, model, audioPath string) (whisperOutput, error) {
+	if cfg.backend == backendMLX {
+		return transcribeMLX(ctx, cfg, model, audioPath)
+	}
 	outDir := filepath.Join(cfg.workDir, "transcripts", model)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return whisperOutput{}, err
@@ -725,6 +811,70 @@ func transcribe(ctx context.Context, cfg config, model, audioPath string) (whisp
 		return whisperOutput{}, err
 	}
 	return out, nil
+}
+
+func transcribeMLX(ctx context.Context, cfg config, model, audioPath string) (whisperOutput, error) {
+	outDir := filepath.Join(cfg.workDir, "transcripts", "mlx-"+model)
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return whisperOutput{}, err
+	}
+	args := []string{
+		"-u", "-c", mlxTranscribeScript(),
+		audioPath,
+		mlxModelRef(model),
+		cfg.language,
+		cfg.initialPrompt,
+	}
+	cmd := exec.CommandContext(ctx, cfg.pythonBin, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return whisperOutput{}, ctx.Err()
+		}
+		return whisperOutput{}, fmt.Errorf("mlx-whisper failed for %s: %w: %s", filepath.Base(audioPath), err, strings.TrimSpace(stderr.String()))
+	}
+	jsonData, err := mlxJSONFromStdout(stdout.Bytes())
+	if err != nil {
+		return whisperOutput{}, err
+	}
+	var out whisperOutput
+	if err := json.Unmarshal(jsonData, &out); err != nil {
+		return whisperOutput{}, err
+	}
+	jsonPath := filepath.Join(outDir, strings.TrimSuffix(filepath.Base(audioPath), filepath.Ext(audioPath))+".json")
+	if err := os.WriteFile(jsonPath, jsonData, 0o644); err != nil {
+		return whisperOutput{}, err
+	}
+	return out, nil
+}
+
+func mlxTranscribeScript() string {
+	return `
+import json
+import sys
+
+import mlx_whisper
+
+audio_path = sys.argv[1]
+model_name = sys.argv[2]
+language = sys.argv[3]
+initial_prompt = sys.argv[4] or None
+
+result = mlx_whisper.transcribe(
+    audio_path,
+    path_or_hf_repo=model_name,
+    language=language,
+    task="transcribe",
+    word_timestamps=True,
+    verbose=False,
+    condition_on_previous_text=False,
+    hallucination_silence_threshold=1.0,
+    initial_prompt=initial_prompt,
+)
+print("TR1_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
+`
 }
 
 func runPreview(ctx context.Context, cfg config) error {
@@ -808,7 +958,11 @@ func runLocalPreview(ctx context.Context, cfg config) error {
 }
 
 func runBenchmark(ctx context.Context, cfg config) error {
-	if err := requireBinaries(cfg.whisperBin); err != nil {
+	if err := validateBackend(cfg.backend); err != nil {
+		return err
+	}
+	backend, err := prepareBackend(ctx, &cfg)
+	if err != nil {
 		return err
 	}
 	audio := cfg.previewOut
@@ -823,30 +977,34 @@ func runBenchmark(ctx context.Context, cfg config) error {
 	if len(models) == 0 {
 		return fmt.Errorf("no models supplied")
 	}
+	audioSeconds := audioDuration(ctx, audio)
 
 	results := make([]benchResult, 0, len(models))
 	for _, model := range models {
-		status(cfg, "benchmark", "running model "+model)
+		status(cfg, "benchmark", "running "+backend+" model "+model)
 		start := time.Now()
 		out, err := transcribe(ctx, cfg, model, audio)
 		if err != nil {
 			return err
 		}
+		duration := time.Since(start)
 		text := normalizeText(out.Text)
 		ref := normalizeText(referenceTranscript)
 		result := benchResult{
+			Backend:  backend,
 			Model:    model,
 			WER:      wordErrorRate(strings.Fields(ref), strings.Fields(text)),
 			Words:    len(strings.Fields(text)),
-			Duration: time.Since(start),
+			Duration: duration,
+			RTF:      realTimeFactor(duration, audioSeconds),
 			Text:     strings.TrimSpace(out.Text),
 		}
 		results = append(results, result)
 	}
 
-	fmt.Println("MODEL\tWER\tWORDS\tTIME\tTEXT")
+	fmt.Println("BACKEND\tMODEL\tWER\tWORDS\tTIME\tRTF\tTEXT")
 	for _, r := range results {
-		fmt.Printf("%s\t%.3f\t%d\t%s\t%s\n", r.Model, r.WER, r.Words, r.Duration.Round(time.Millisecond), oneLine(r.Text))
+		fmt.Printf("%s\t%s\t%.3f\t%d\t%s\t%.3f\t%s\n", r.Backend, r.Model, r.WER, r.Words, r.Duration.Round(time.Millisecond), r.RTF, oneLine(r.Text))
 	}
 	return nil
 }
@@ -983,6 +1141,91 @@ func requireBinaries(names ...string) error {
 	return nil
 }
 
+func validateBackend(backend string) error {
+	switch strings.ToLower(strings.TrimSpace(backend)) {
+	case backendAuto, backendCPU, backendMLX:
+		return nil
+	default:
+		return fmt.Errorf("--backend must be one of: auto, cpu, mlx")
+	}
+}
+
+func prepareBackend(ctx context.Context, cfg *config) (string, error) {
+	backend := strings.ToLower(strings.TrimSpace(cfg.backend))
+	if backend == backendAuto {
+		if mlxSupportedHardware() {
+			if _, err := exec.LookPath(cfg.uvBin); err == nil {
+				backend = backendMLX
+			} else {
+				backend = backendCPU
+			}
+		} else {
+			backend = backendCPU
+		}
+	}
+	cfg.backend = backend
+	switch backend {
+	case backendCPU:
+		if err := requireBinaries(cfg.ffmpegBin, cfg.whisperBin); err != nil {
+			return "", err
+		}
+		pythonBin, err := whisperPythonBin(*cfg)
+		if err != nil {
+			return "", err
+		}
+		cfg.pythonBin = pythonBin
+		return backendCPU, nil
+	case backendMLX:
+		if err := requireBinaries(cfg.ffmpegBin, cfg.uvBin); err != nil {
+			return "", err
+		}
+		pythonBin, err := ensureMLXEnv(ctx, *cfg)
+		if err != nil {
+			return "", err
+		}
+		cfg.pythonBin = pythonBin
+		return backendMLX, nil
+	default:
+		return "", fmt.Errorf("--backend must be one of: auto, cpu, mlx")
+	}
+}
+
+func mlxSupportedHardware() bool {
+	return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
+}
+
+func ensureMLXEnv(ctx context.Context, cfg config) (string, error) {
+	projectDir := filepath.Join(cfg.workDir, "mlx")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		return "", err
+	}
+	pyprojectPath := filepath.Join(projectDir, "pyproject.toml")
+	if err := os.WriteFile(pyprojectPath, []byte(embeddedPyproject), 0o644); err != nil {
+		return "", err
+	}
+	cmd := exec.CommandContext(ctx, cfg.uvBin, "sync", "--project", projectDir, "--quiet")
+	cmd.Stderr = prefixedStderr(cfg, "uv")
+	if cfg.verbose {
+		cmd.Stdout = os.Stderr
+	} else {
+		cmd.Stdout = io.Discard
+	}
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("uv sync for MLX runtime failed: %w", err)
+	}
+	return filepath.Join(projectDir, ".venv", "bin", "python"), nil
+}
+
+func mlxModelRef(model string) string {
+	if strings.Contains(model, "/") || strings.Contains(model, string(filepath.Separator)) {
+		return model
+	}
+	return fmt.Sprintf(defaultMLXModelRepo, model)
+}
+
 func whisperPythonBin(cfg config) (string, error) {
 	if cfg.pythonBin != "" {
 		if _, err := exec.LookPath(cfg.pythonBin); err != nil {
@@ -1067,6 +1310,45 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+func audioDuration(ctx context.Context, audioPath string) float64 {
+	if _, err := exec.LookPath("ffprobe"); err != nil {
+		return 0
+	}
+	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", audioPath)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return 0
+	}
+	seconds, err := strconv.ParseFloat(strings.TrimSpace(stdout.String()), 64)
+	if err != nil {
+		return 0
+	}
+	return seconds
+}
+
+func mlxJSONFromStdout(stdout []byte) ([]byte, error) {
+	const marker = "TR1_JSON:"
+	if i := bytes.LastIndex(stdout, []byte(marker)); i >= 0 {
+		line := stdout[i+len(marker):]
+		if j := bytes.IndexByte(line, '\n'); j >= 0 {
+			line = line[:j]
+		}
+		return bytes.TrimSpace(line), nil
+	}
+	if i := bytes.LastIndexByte(stdout, '{'); i >= 0 {
+		return bytes.TrimSpace(stdout[i:]), nil
+	}
+	return nil, fmt.Errorf("mlx-whisper did not print JSON output")
+}
+
+func realTimeFactor(duration time.Duration, audioSeconds float64) float64 {
+	if audioSeconds <= 0 {
+		return 0
+	}
+	return duration.Seconds() / audioSeconds
 }
 
 func needsSpace(s string) bool {
