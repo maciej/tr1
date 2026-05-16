@@ -1,0 +1,6 @@
+.DS_Store
+.tr1/
+assets/news-preview.mp3
+assets/*.wav
+assets/*.aiff
+assets/*.json
