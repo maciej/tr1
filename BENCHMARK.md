@@ -1,48 +1,64 @@
 # Benchmark
 
-Fixtures live in `fixtures/*.txt`; generated audio lives in `assets/*.mp3`. Select one with `--fixture`.
+Fixtures live in `fixtures/*.txt`; generated audio lives in `assets/*.mp3`. The benchmark fixture is intentionally long enough to expose both WER and throughput behavior.
 
-| Fixture | Text | Default audio |
-| --- | --- | --- |
-| `news-preview` | `fixtures/news-preview.txt` | `assets/news-preview.mp3` |
-| `biebrza-broadcast` | `fixtures/biebrza-broadcast.txt` | `assets/biebrza-broadcast.mp3` |
+| Fixture | Text | Audio | Duration | Reference words |
+| --- | --- | --- | ---: | ---: |
+| `biebrza-broadcast` | `fixtures/biebrza-broadcast.txt` | `assets/biebrza-broadcast.mp3` | 295.219s | 554 |
 
-Fixture: `assets/news-preview.mp3`, generated locally with `go run ./cmd/tr1 preview-local` because the supplied short-lived ElevenLabs key returned `401 Unauthorized` when `sag` tried to call ElevenLabs.
+Results below were run on 2026-05-16 with cached model files.
 
-Audio duration:
+RTF is wall-clock transcription time divided by audio duration, so lower is better. Throughput is the inverse: audio seconds processed per wall-clock second.
 
-```text
-20.523s
-```
+## Whole-Clip Throughput and WER
+
+This matrix transcribes the whole fixture once per model. It is the cleanest backend/model throughput comparison.
 
 Commands:
 
 ```sh
-go run ./cmd/tr1 benchmark --backend cpu --models tiny,base,small,medium --verbose
-go run ./cmd/tr1 benchmark --backend mlx --models tiny,base,small,medium --verbose
+go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend cpu --models tiny,base,small,medium,large --mode whole
+go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode whole
 ```
-
-Results below are cached steady-state runs. First runs can be slower because OpenAI Whisper downloads `.pt` files and MLX downloads Hugging Face model files.
 
 | Backend | Model | WER | Words | Time | RTF | Throughput |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| cpu | tiny | 0.114 | 44 | 3.696s | 0.180x | 5.55x realtime |
-| cpu | base | 0.114 | 46 | 22.720s | 1.107x | 0.90x realtime |
-| cpu | small | 0.045 | 43 | 14.159s | 0.690x | 1.45x realtime |
-| cpu | medium | 0.000 | 44 | 38.904s | 1.896x | 0.53x realtime |
-| mlx | tiny | 0.182 | 45 | 1.856s | 0.090x | 11.06x realtime |
-| mlx | base | unstable | 44-267 | 4.828-6.617s | 0.235-0.322x | 3.10-4.25x realtime |
-| mlx | small | 0.045 | 43 | 2.869s | 0.140x | 7.15x realtime |
-| mlx | medium | 0.000 | 44 | 5.227s | 0.255x | 3.93x realtime |
+| cpu | tiny | 0.137 | 540 | 24.276s | 0.082x | 12.20x realtime |
+| cpu | base | 0.052 | 548 | 39.650s | 0.134x | 7.46x realtime |
+| cpu | small | 0.022 | 555 | 2m1.141s | 0.410x | 2.44x realtime |
+| cpu | medium | 0.013 | 556 | 6m12.273s | 1.261x | 0.79x realtime |
+| cpu | large | 0.007 | 558 | 11m8.124s | 2.263x | 0.44x realtime |
+| mlx | tiny | 0.153 | 540 | 4.982s | 0.017x | 58.82x realtime |
+| mlx | base | 0.081 | 547 | 5.974s | 0.020x | 50.00x realtime |
+| mlx | small | 0.025 | 555 | 12.855s | 0.044x | 22.73x realtime |
+| mlx | medium | 0.014 | 555 | 30.511s | 0.103x | 9.71x realtime |
+| mlx | large | 0.016 | 563 | 1m26.620s | 0.293x | 3.41x realtime |
 
-RTF is wall-clock transcription time divided by audio duration, so lower is better. Throughput is the inverse: audio seconds processed per wall-clock second.
+## MLX Whole vs Chunked
+
+This matrix isolates the WER lift from the selected live settings: 12s rolling window, 3s step, 1500ms holdback.
+
+Commands:
+
+```sh
+go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode whole
+go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode chunked --window 12 --step 3 --holdback 1500ms
+```
+
+| Model | Whole WER | Chunked WER | WER lift | Chunked words | Chunked time | Chunked RTF | Chunked throughput |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tiny | 0.153 | 0.142 | -0.011 | 545 | 15.632s | 0.053x | 18.87x realtime |
+| base | 0.081 | 0.094 | +0.013 | 539 | 25.014s | 0.085x | 11.76x realtime |
+| small | 0.025 | 0.099 | +0.074 | 555 | 1m7.999s | 0.230x | 4.35x realtime |
+| medium | 0.014 | 0.063 | +0.049 | 544 | 4m21.717s | 0.887x | 1.13x realtime |
+| large | 0.016 | 0.043 | +0.027 | 543 | 5m29.492s | 1.116x | 0.90x realtime |
 
 ## Notes
 
 - `--backend auto` selects MLX on Apple Silicon when `uv` is available; otherwise it falls back to the CPU/OpenAI Whisper backend.
-- The CPU backend still uses the Homebrew `openai-whisper` CLI and stores model files in `.tr1/models`.
-- The MLX backend uses an embedded `pyproject.toml` from `cmd/tr1/mlx.pyproject.toml`. On first MLX use, `tr1` writes it to `.tr1/mlx/pyproject.toml`, runs `uv sync --project .tr1/mlx`, and then runs the worker with `.tr1/mlx/.venv/bin/python`.
-- MLX model names like `tiny`, `base`, `small`, and `medium` are mapped to Hugging Face repos like `mlx-community/whisper-medium-mlx`. Passing a full repo name also works.
-- MLX `base` was rechecked after all model files were cached. It remained slower than MLX `small` and was unstable on this fixture, sometimes decoding a long hallucinated tail. This is not model download time.
+- The CPU backend uses the Homebrew `openai-whisper` CLI and stores model files in `.tr1/models`.
+- The MLX backend uses the embedded `cmd/tr1/mlx.pyproject.toml`. On first MLX use, `tr1` writes it to `.tr1/mlx/pyproject.toml`, runs `uv sync --project .tr1/mlx`, and then runs the worker with `.tr1/mlx/.venv/bin/python`.
+- MLX model names like `tiny`, `base`, `small`, `medium`, and `large` map to Hugging Face repos like `mlx-community/whisper-medium-mlx`. Passing a full repo name also works.
+- Chunked benchmark time includes repeated overlapping-window inference, so it measures live-mode cost rather than model-only whole-clip speed.
 
-For this synthetic Polish fixture, `medium` is the only model that reaches perfect WER on both backends. MLX `medium` is fast enough for live use here; CPU `medium` is not.
+On this fixture, MLX `medium` is the best whole-clip tradeoff: near-CPU-medium WER at 9.71x realtime. With the current live windowing settings, MLX `medium` stays barely faster than realtime but pays a noticeable WER penalty; MLX `large` improves chunked WER but falls below realtime.
