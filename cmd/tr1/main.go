@@ -19,9 +19,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode"
+	"unsafe"
 
 	"github.com/spf13/cobra"
 )
@@ -423,6 +425,9 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 	status(cfg, "ffmpeg", "streaming raw 16 kHz PCM")
 	status(cfg, "whisper", fmt.Sprintf("streaming %ds rolling windows every %ds", cfg.chunkSeconds, cfg.stepSeconds))
 
+	wordWriter := newTerminalWordWriter(os.Stdout)
+	defer wordWriter.close()
+
 	var pcm []byte
 	readBuf := make([]byte, 4096)
 	nextSubmit := stepBytes
@@ -493,7 +498,7 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 			}
 			if resp.Error != "" {
 				status(cfg, "whisper", fmt.Sprintf("window %d failed: %s", resp.Seq, resp.Error))
-			} else if err := printStableWords(ctx, cfg, resp, windowEnd-holdbackSeconds, &printedUntil); err != nil {
+			} else if err := printStableWords(ctx, cfg, wordWriter, resp, windowEnd-holdbackSeconds, &printedUntil); err != nil {
 				return err
 			}
 			nextPrintSeq++
@@ -639,7 +644,7 @@ func (w *liveWhisperWorker) close() {
 	}
 }
 
-func printStableWords(ctx context.Context, cfg config, resp whisperResponse, stableUntil float64, printedUntil *float64) error {
+func printStableWords(ctx context.Context, cfg config, writer *terminalWordWriter, resp whisperResponse, stableUntil float64, printedUntil *float64) error {
 	printed := 0
 	for _, word := range resp.Words {
 		start := resp.Offset + word.Start
@@ -656,9 +661,8 @@ func printStableWords(ctx context.Context, cfg config, resp whisperResponse, sta
 			return ctx.Err()
 		default:
 		}
-		fmt.Print(text)
-		if needsSpace(text) {
-			fmt.Print(" ")
+		if err := writer.writeWord(text, needsSpace(text)); err != nil {
+			return err
 		}
 		*printedUntil = end
 		printed++
@@ -670,6 +674,164 @@ func printStableWords(ctx context.Context, cfg config, resp whisperResponse, sta
 		status(cfg, "whisper", fmt.Sprintf("window %d: printed %d words", resp.Seq, printed))
 	}
 	return nil
+}
+
+type terminalWordWriter struct {
+	out        io.Writer
+	columns    *terminalColumns
+	col        int
+	stopResize func()
+}
+
+type terminalColumns struct {
+	fd       uintptr
+	width    atomic.Int32
+	enabled  bool
+	provider func(uintptr) (int, bool)
+}
+
+func newTerminalWordWriter(file *os.File) *terminalWordWriter {
+	columns := newTerminalColumns(file)
+	stopResize := startTerminalResizeListener(context.Background(), columns, nil)
+	return &terminalWordWriter{
+		out:        file,
+		columns:    columns,
+		stopResize: stopResize,
+	}
+}
+
+func newTerminalColumns(file *os.File) *terminalColumns {
+	columns := &terminalColumns{
+		fd:       file.Fd(),
+		provider: terminalWidth,
+	}
+	if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+		columns.enabled = true
+		columns.refresh()
+	}
+	return columns
+}
+
+func newTestTerminalWordWriter(out io.Writer, width int) *terminalWordWriter {
+	columns := &terminalColumns{enabled: width > 0}
+	columns.width.Store(int32(width))
+	return &terminalWordWriter{out: out, columns: columns}
+}
+
+func (w *terminalWordWriter) close() {
+	if w.stopResize != nil {
+		w.stopResize()
+	}
+}
+
+func (w *terminalWordWriter) writeWord(text string, trailingSpace bool) error {
+	width := w.columns.current()
+	textWidth := displayWidth(text)
+	spaceWidth := 0
+	if trailingSpace {
+		spaceWidth = 1
+	}
+	if width > 0 && w.col > 0 && w.col+textWidth+spaceWidth > width {
+		if _, err := fmt.Fprint(w.out, "\n"); err != nil {
+			return err
+		}
+		w.col = 0
+	}
+	if _, err := fmt.Fprint(w.out, text); err != nil {
+		return err
+	}
+	w.col += textWidth
+	if trailingSpace {
+		if _, err := fmt.Fprint(w.out, " "); err != nil {
+			return err
+		}
+		w.col += spaceWidth
+	}
+	return nil
+}
+
+func (c *terminalColumns) current() int {
+	if c == nil || !c.enabled {
+		return 0
+	}
+	return int(c.width.Load())
+}
+
+func (c *terminalColumns) refresh() {
+	if c == nil || !c.enabled || c.provider == nil {
+		return
+	}
+	if width, ok := c.provider(c.fd); ok && width > 0 {
+		c.width.Store(int32(width))
+	}
+}
+
+func startTerminalResizeListener(ctx context.Context, columns *terminalColumns, signals chan os.Signal) func() {
+	if columns == nil || !columns.enabled {
+		return nil
+	}
+	if signals == nil {
+		signals = make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGWINCH)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-signals:
+				columns.refresh()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		signal.Stop(signals)
+	}
+}
+
+type winsize struct {
+	row    uint16
+	col    uint16
+	xpixel uint16
+	ypixel uint16
+}
+
+func terminalWidth(fd uintptr) (int, bool) {
+	var ws winsize
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, fd, uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&ws)))
+	if errno != 0 || ws.col == 0 {
+		return 0, false
+	}
+	return int(ws.col), true
+}
+
+func displayWidth(text string) int {
+	width := 0
+	for _, r := range text {
+		switch {
+		case r == '\n' || r == '\r':
+		case unicode.Is(unicode.Mn, r), unicode.Is(unicode.Me, r), unicode.Is(unicode.Cf, r):
+		case isWideRune(r):
+			width += 2
+		default:
+			width++
+		}
+	}
+	return width
+}
+
+func isWideRune(r rune) bool {
+	return (r >= 0x1100 && r <= 0x115F) ||
+		(r >= 0x2329 && r <= 0x232A) ||
+		(r >= 0x2E80 && r <= 0xA4CF) ||
+		(r >= 0xAC00 && r <= 0xD7A3) ||
+		(r >= 0xF900 && r <= 0xFAFF) ||
+		(r >= 0xFE10 && r <= 0xFE19) ||
+		(r >= 0xFE30 && r <= 0xFE6F) ||
+		(r >= 0xFF00 && r <= 0xFF60) ||
+		(r >= 0xFFE0 && r <= 0xFFE6)
 }
 
 func liveWhisperWorkerScript() string {
