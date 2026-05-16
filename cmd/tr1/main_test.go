@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -177,4 +178,42 @@ func TestTerminalResizeListenerRefreshesWidthOnSIGWINCH(t *testing.T) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("terminal width = %d, want 24 after SIGWINCH", columns.current())
+}
+
+func TestStationsCommandListsAvailableStations(t *testing.T) {
+	cmd := newRootCommand(t.Context())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"stations"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("stations command returned error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"ALIAS",
+		"NAME",
+		"URL",
+		"tokfm",
+		"TokFM",
+		"trojka, trójka, pr3, program3, program-3, troika, radio3, radio-3, three, 3",
+		"https://rs201-krk-cyfronet.rmfstream.pl/rmf_fm",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stations output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestStationsCommandRejectsArgs(t *testing.T) {
+	cmd := newRootCommand(t.Context())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"stations", "rmf"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("stations command accepted unexpected argument")
+	}
 }

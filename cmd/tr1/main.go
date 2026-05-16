@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"text/tabwriter"
 	"time"
 	"unicode"
 	"unsafe"
@@ -276,15 +277,42 @@ func newRootCommand(ctx context.Context) *cobra.Command {
 	}
 	addBenchmarkFlags(benchmarkCmd, &cfg)
 
+	stationsCmd := &cobra.Command{
+		Use:   "stations",
+		Short: "List available radio stations",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return writeStations(cmd.OutOrStdout())
+		},
+	}
+
 	rootCmd.AddCommand(
 		streamCmd,
 		previewCmd,
 		localPreviewCmd,
 		benchmarkCmd,
+		stationsCmd,
 	)
 	rootCmd.AddCommand(stationCmds...)
 
 	return rootCmd
+}
+
+func writeStations(w io.Writer) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "ALIAS\tNAME\tURL\tALIASES"); err != nil {
+		return err
+	}
+	for _, s := range stations {
+		primaryAlias := ""
+		if len(s.Aliases) > 0 {
+			primaryAlias = s.Aliases[0]
+		}
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", primaryAlias, s.Name, s.URL, strings.Join(s.Aliases, ", ")); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
 
 func stationAliasCommands(cfg *config, run func(*cobra.Command, []string) error) []*cobra.Command {
