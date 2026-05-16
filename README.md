@@ -59,7 +59,7 @@ Generate the synthetic news-broadcast preview audio with ElevenLabs through `sag
 ELEVENLABS_API_KEY=... go run ./cmd/tr1 preview
 ```
 
-Benchmark fixtures are selected by name. The default fixture is `news-preview`; the longer Biebrza broadcast fixture is `biebrza-broadcast`:
+Benchmark fixtures are selected by name. The default fixture is `biebrza-broadcast`; the shorter smoke-test fixture is `news-preview`:
 
 ```sh
 ELEVENLABS_API_KEY=... go run ./cmd/tr1 preview --fixture biebrza-broadcast --voice <voice-name-or-id>
@@ -77,6 +77,10 @@ Benchmark Whisper models against that generated preview:
 ```sh
 go run ./cmd/tr1 benchmark --models tiny,base
 ```
+
+## Codex worktrees
+
+Codex worktrees are normal Git worktrees, so ignored files like `.env` and generated `assets/*.mp3` do not move with a thread. The checked-in Codex local environment config at `.codex/environments/environment.toml` copies `.env` and generated media from `assets/` into new worktrees. It finds the main checkout through Git's common directory, so it does not depend on a hard-coded username or checkout path.
 
 Run the default live stream with a specific model:
 

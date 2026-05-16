@@ -36,7 +36,7 @@ const (
 	backendCPU          = "cpu"
 	backendMLX          = "mlx"
 	defaultMLXModelRepo = "mlx-community/whisper-%s-mlx"
-	defaultFixtureName  = "news-preview"
+	defaultFixtureName  = "biebrza-broadcast"
 )
 
 type benchmarkFixture struct {

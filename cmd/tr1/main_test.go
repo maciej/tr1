@@ -62,7 +62,7 @@ func TestLookupStationUnknown(t *testing.T) {
 
 func TestLookupFixtureAliases(t *testing.T) {
 	tests := map[string]string{
-		"":                  "news-preview",
+		"":                  "biebrza-broadcast",
 		"news-preview":      "news-preview",
 		"biebrza-broadcast": "biebrza-broadcast",
 	}
