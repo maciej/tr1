@@ -117,6 +117,7 @@ type config struct {
 	uvBin         string
 	pythonBin     string
 	ffmpegBin     string
+	ffplayBin     string
 	sagBin        string
 	sagVoice      string
 	fixture       string
@@ -124,6 +125,7 @@ type config struct {
 	previewOut    string
 	benchmarkMode string
 	initialPrompt string
+	monitorAudio  bool
 	verbose       bool
 }
 
@@ -197,6 +199,7 @@ func defaultConfig() config {
 		uvBin:         getenv("TR1_UV_BIN", "uv"),
 		pythonBin:     getenv("TR1_PYTHON_BIN", ""),
 		ffmpegBin:     getenv("TR1_FFMPEG_BIN", "ffmpeg"),
+		ffplayBin:     getenv("TR1_FFPLAY_BIN", "ffplay"),
 		sagBin:        getenv("TR1_SAG_BIN", "sag"),
 		sagVoice:      getenv("TR1_SAG_VOICE", ""),
 		fixture:       getenv("TR1_FIXTURE", defaultFixtureName),
@@ -204,6 +207,7 @@ func defaultConfig() config {
 		previewOut:    "",
 		benchmarkMode: getenv("TR1_BENCHMARK_MODE", benchmarkModeWhole),
 		initialPrompt: "Polski serwis informacyjny radiowy. Poprawna polska interpunkcja i nazwy własne.",
+		monitorAudio:  boolFromEnv("TR1_PLAY", false),
 		verbose:       boolFromEnv("TR1_VERBOSE", false),
 	}
 }
@@ -361,6 +365,8 @@ func addStreamFlags(cmd *cobra.Command, cfg *config) {
 	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
 	flags.StringVar(&cfg.pythonBin, "python-bin", cfg.pythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
 	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
+	flags.StringVar(&cfg.ffplayBin, "ffplay-bin", cfg.ffplayBin, "ffplay executable used by --play")
+	flags.BoolVar(&cfg.monitorAudio, "play", cfg.monitorAudio, "play live stream audio through the system audio output while transcribing")
 	flags.DurationVar(&cfg.wordDelay, "word-delay", cfg.wordDelay, "delay between printed words")
 	flags.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back live words near the unstable end of each window")
 	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
@@ -411,6 +417,11 @@ func validateStreamConfig(cfg config) error {
 	if cfg.stepSeconds > cfg.chunkSeconds {
 		return fmt.Errorf("--step must be less than or equal to --window")
 	}
+	if cfg.monitorAudio {
+		if err := requireBinaries(cfg.ffplayBin); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -446,6 +457,11 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 	if err != nil {
 		return err
 	}
+	audioMonitor, err := startAudioMonitor(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer audioMonitor.close()
 	worker, err := startWhisperWorker(cfg)
 	if err != nil {
 		return err
@@ -477,6 +493,12 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 		n, readErr := ffmpegStdout.Read(readBuf)
 		if n > 0 {
 			chunk := readBuf[:n]
+			if err := audioMonitor.write(chunk); err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return err
+			}
 			pcm = append(pcm, chunk...)
 			totalBytes += n
 			for totalBytes >= nextSubmit && len(pcm) >= minInt(windowBytes, totalBytes) {
@@ -568,6 +590,13 @@ type liveWhisperWorker struct {
 	errors  chan error
 }
 
+type audioMonitor struct {
+	enabled bool
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	done    chan error
+}
+
 func startPCMStream(ctx context.Context, cfg config, streamURL string) (io.Reader, <-chan error, error) {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin",
@@ -594,6 +623,73 @@ func startPCMStream(ctx context.Context, cfg config, streamURL string) (io.Reade
 		done <- err
 	}()
 	return stdout, done, nil
+}
+
+func startAudioMonitor(ctx context.Context, cfg config) (*audioMonitor, error) {
+	if !cfg.monitorAudio {
+		return &audioMonitor{}, nil
+	}
+	if err := requireBinaries(cfg.ffplayBin); err != nil {
+		return nil, err
+	}
+	cmd := audioMonitorCommand(ctx, cfg)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stdout = io.Discard
+	cmd.Stderr = prefixedStderr(cfg, "ffplay")
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	monitor := &audioMonitor{
+		enabled: true,
+		cmd:     cmd,
+		stdin:   stdin,
+		done:    make(chan error, 1),
+	}
+	go func() {
+		err := cmd.Wait()
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		monitor.done <- err
+	}()
+	status(cfg, "audio", "monitoring stream through system audio output")
+	return monitor, nil
+}
+
+func audioMonitorCommand(ctx context.Context, cfg config) *exec.Cmd {
+	args := []string{
+		"-hide_banner", "-loglevel", "error", "-nodisp",
+		"-f", "s16le", "-ac", "1", "-ar", "16000",
+		"-i", "pipe:0",
+	}
+	return exec.CommandContext(ctx, cfg.ffplayBin, args...)
+}
+
+func (m *audioMonitor) write(p []byte) error {
+	if m == nil || !m.enabled {
+		return nil
+	}
+	_, err := m.stdin.Write(p)
+	if err != nil && isClosedPipeError(err) {
+		return nil
+	}
+	return err
+}
+
+func (m *audioMonitor) close() {
+	if m == nil || !m.enabled {
+		return
+	}
+	_ = m.stdin.Close()
+	select {
+	case <-m.done:
+	case <-time.After(2 * time.Second):
+		_ = m.cmd.Process.Kill()
+		<-m.done
+	}
 }
 
 func startWhisperWorker(cfg config) (*liveWhisperWorker, error) {
