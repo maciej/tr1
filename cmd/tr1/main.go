@@ -593,7 +593,8 @@ type liveWhisperWorker struct {
 type audioMonitor struct {
 	enabled bool
 	cmd     *exec.Cmd
-	stdin   io.WriteCloser
+	chunks  chan []byte
+	errors  chan error
 	done    chan error
 }
 
@@ -645,9 +646,11 @@ func startAudioMonitor(ctx context.Context, cfg config) (*audioMonitor, error) {
 	monitor := &audioMonitor{
 		enabled: true,
 		cmd:     cmd,
-		stdin:   stdin,
+		chunks:  make(chan []byte, 64),
+		errors:  make(chan error, 1),
 		done:    make(chan error, 1),
 	}
+	go monitor.writeToPlayer(stdin)
 	go func() {
 		err := cmd.Wait()
 		if ctx.Err() != nil {
@@ -662,28 +665,50 @@ func startAudioMonitor(ctx context.Context, cfg config) (*audioMonitor, error) {
 func audioMonitorCommand(ctx context.Context, cfg config) *exec.Cmd {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nodisp",
-		"-f", "s16le", "-ac", "1", "-ar", "16000",
+		"-f", "s16le", "-sample_rate", "16000", "-ch_layout", "mono",
 		"-i", "pipe:0",
 	}
 	return exec.CommandContext(ctx, cfg.ffplayBin, args...)
+}
+
+func (m *audioMonitor) writeToPlayer(stdin io.WriteCloser) {
+	defer stdin.Close()
+	for chunk := range m.chunks {
+		if _, err := stdin.Write(chunk); err != nil {
+			if !isClosedPipeError(err) {
+				m.errors <- err
+			}
+			return
+		}
+	}
 }
 
 func (m *audioMonitor) write(p []byte) error {
 	if m == nil || !m.enabled {
 		return nil
 	}
-	_, err := m.stdin.Write(p)
-	if err != nil && isClosedPipeError(err) {
-		return nil
+	select {
+	case err := <-m.errors:
+		if isClosedPipeError(err) {
+			return nil
+		}
+		return err
+	default:
 	}
-	return err
+	chunk := append([]byte(nil), p...)
+	select {
+	case m.chunks <- chunk:
+	default:
+		// Playback is only a monitor path; keep transcription moving if the audio device lags.
+	}
+	return nil
 }
 
 func (m *audioMonitor) close() {
 	if m == nil || !m.enabled {
 		return
 	}
-	_ = m.stdin.Close()
+	close(m.chunks)
 	select {
 	case <-m.done:
 	case <-time.After(2 * time.Second):

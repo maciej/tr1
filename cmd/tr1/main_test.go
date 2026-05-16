@@ -159,8 +159,8 @@ func TestAudioMonitorCommandConsumesPCMFromStdin(t *testing.T) {
 	for _, want := range []string{
 		"ffplay",
 		"-f s16le",
-		"-ac 1",
-		"-ar 16000",
+		"-sample_rate 16000",
+		"-ch_layout mono",
 		"-i pipe:0",
 	} {
 		if !strings.Contains(got, want) {
