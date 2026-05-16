@@ -16,10 +16,11 @@ The command resolves the TOK FM playlist at `http://www.tuba.fm/stream.pls?radio
 
 - Go 1.26+
 - `ffmpeg`
-- `openai-whisper` CLI available as `whisper`
+- `openai-whisper` CLI available as `whisper` for the CPU backend
+- `uv` for the MLX backend on Apple Silicon
 - `sag` only for generating the benchmark preview audio
 
-On this machine, `ffmpeg`, `whisper`, and `sag` are installed through Homebrew.
+On this machine, `ffmpeg`, `whisper`, `uv`, and `sag` are installed through Homebrew.
 
 ## Useful commands
 
@@ -46,6 +47,15 @@ Run the live stream with a specific model:
 ```sh
 go run ./cmd/tr1 --model base
 ```
+
+Select the backend explicitly:
+
+```sh
+go run ./cmd/tr1 --backend cpu --model base
+go run ./cmd/tr1 --backend mlx --model medium
+```
+
+`--backend auto` is the default. On Apple Silicon with `uv` available it uses MLX; otherwise it falls back to the CPU/OpenAI Whisper backend. The MLX Python runtime is provisioned on first use from the embedded `cmd/tr1/mlx.pyproject.toml` into `.tr1/mlx` with `uv sync`, so an installed `tr1` binary does not need the repo checkout to find the Python project metadata.
 
 Tune live latency with the rolling window and step size:
 
