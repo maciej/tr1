@@ -17,8 +17,8 @@ This matrix transcribes the whole fixture once per model. It is the cleanest bac
 Commands:
 
 ```sh
-go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend cpu --models tiny,base,small,medium,large --mode whole
-go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode whole
+go run ./cmd/tr1-lab benchmark --fixture biebrza-broadcast --backend cpu --models tiny,base,small,medium,large --mode whole
+go run ./cmd/tr1-lab benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode whole
 ```
 
 | Backend | Model | WER | Words | Time | RTF | Throughput |
@@ -41,8 +41,8 @@ This matrix isolates the WER lift from the previous live settings: 12s rolling w
 Commands:
 
 ```sh
-go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode whole
-go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode chunked --window 12 --step 3 --holdback 1500ms
+go run ./cmd/tr1-lab benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode whole
+go run ./cmd/tr1-lab benchmark --fixture biebrza-broadcast --backend mlx --models tiny,base,small,medium,large --mode chunked --window 12 --step 3 --holdback 1500ms
 ```
 
 | Model | Whole WER | Chunked WER | WER lift | Chunked words | Chunked time | Chunked RTF | Chunked throughput |
@@ -86,7 +86,7 @@ The shortest low-WER setting in this sweep is 24s window, 15s step, 1s holdback:
 
 - `--backend auto` selects MLX on Apple Silicon when `uv` is available; otherwise it falls back to the CPU/OpenAI Whisper backend.
 - The CPU backend uses the Homebrew `openai-whisper` CLI and stores model files in `.tr1/models`.
-- The MLX backend uses the embedded `cmd/tr1/mlx.pyproject.toml`. On first MLX use, `tr1` writes it to `.tr1/mlx/pyproject.toml`, runs `uv sync --project .tr1/mlx`, and then runs the worker with `.tr1/mlx/.venv/bin/python`.
+- The MLX backend uses the embedded `internal/tr1/mlx.pyproject.toml`. On first MLX use, `tr1` writes it to `.tr1/mlx/pyproject.toml`, runs `uv sync --project .tr1/mlx`, and then runs the worker with `.tr1/mlx/.venv/bin/python`.
 - MLX model names like `tiny`, `base`, `small`, `medium`, and `large` map to Hugging Face repos like `mlx-community/whisper-medium-mlx`. Passing a full repo name also works.
 - Chunked benchmark time includes repeated overlapping-window inference, so it measures live-mode cost rather than model-only whole-clip speed.
 - OpenAI Whisper's README says `transcribe()` processes audio with a sliding 30-second window: <https://github.com/openai/whisper/blob/main/README.md>.

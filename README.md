@@ -56,26 +56,14 @@ On this machine, `ffmpeg`, `whisper`, `uv`, and `sag` are installed through Home
 Generate the synthetic news-broadcast preview audio with ElevenLabs through `sag`:
 
 ```sh
-ELEVENLABS_API_KEY=... go run ./cmd/tr1 preview
+ELEVENLABS_API_KEY=... go run ./cmd/tr1-lab preview
 ```
 
 Benchmark fixtures are selected by name. The default fixture is `biebrza-broadcast`; the shorter smoke-test fixture is `news-preview`:
 
 ```sh
-ELEVENLABS_API_KEY=... go run ./cmd/tr1 preview --fixture biebrza-broadcast --voice <voice-name-or-id>
-go run ./cmd/tr1 benchmark --fixture biebrza-broadcast --models tiny,base,small,medium
-```
-
-If the ElevenLabs key is unavailable, create a local benchmark fixture with macOS speech synthesis:
-
-```sh
-go run ./cmd/tr1 preview-local
-```
-
-Benchmark Whisper models against that generated preview:
-
-```sh
-go run ./cmd/tr1 benchmark --models tiny,base
+ELEVENLABS_API_KEY=... go run ./cmd/tr1-lab preview --fixture biebrza-broadcast --voice <voice-name-or-id>
+go run ./cmd/tr1-lab benchmark --fixture biebrza-broadcast --models tiny,base,small,medium
 ```
 
 ## Codex worktrees
@@ -95,7 +83,7 @@ go run ./cmd/tr1 --backend cpu --model base
 go run ./cmd/tr1 --backend mlx --model medium
 ```
 
-`--backend auto` is the default. On Apple Silicon with `uv` available it uses MLX; otherwise it falls back to the CPU/OpenAI Whisper backend. The MLX Python runtime is provisioned on first use from the embedded `cmd/tr1/mlx.pyproject.toml` into `.tr1/mlx` with `uv sync`, so an installed `tr1` binary does not need the repo checkout to find the Python project metadata.
+`--backend auto` is the default. On Apple Silicon with `uv` available it uses MLX; otherwise it falls back to the CPU/OpenAI Whisper backend. The MLX Python runtime is provisioned on first use from the embedded `internal/tr1/mlx.pyproject.toml` into `.tr1/mlx` with `uv sync`, so an installed `tr1` binary does not need the repo checkout to find the Python project metadata.
 
 Tune live latency with the rolling window and step size:
 

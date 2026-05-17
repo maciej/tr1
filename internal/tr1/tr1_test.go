@@ -1,4 +1,4 @@
-package main
+package tr1
 
 import (
 	"bytes"
@@ -198,7 +198,7 @@ func TestTerminalResizeListenerRefreshesWidthOnSIGWINCH(t *testing.T) {
 }
 
 func TestStationsCommandListsAvailableStations(t *testing.T) {
-	cmd := newRootCommand(t.Context())
+	cmd := NewRootCommand(t.Context())
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&bytes.Buffer{})
@@ -225,12 +225,40 @@ func TestStationsCommandListsAvailableStations(t *testing.T) {
 }
 
 func TestStationsCommandRejectsArgs(t *testing.T) {
-	cmd := newRootCommand(t.Context())
+	cmd := NewRootCommand(t.Context())
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"stations", "rmf"})
 
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("stations command accepted unexpected argument")
+	}
+}
+
+func TestLabExecutableOwnsNonEndUserCommands(t *testing.T) {
+	cmd := NewLabCommand(t.Context())
+
+	if found, _, err := cmd.Find([]string{"preview"}); err != nil || found == nil || found.Name() != "preview" {
+		t.Fatalf("preview command lookup failed: command=%v err=%v", found, err)
+	}
+	if found, _, err := cmd.Find([]string{"benchmark"}); err != nil || found == nil || found.Name() != "benchmark" {
+		t.Fatalf("benchmark command lookup failed: command=%v err=%v", found, err)
+	}
+	if found, _, err := cmd.Find([]string{"preview-local"}); err == nil && found != nil && found.Name() == "preview-local" {
+		t.Fatal("preview-local command is still registered")
+	}
+}
+
+func TestRootCommandExcludesNonEndUserCommands(t *testing.T) {
+	cmd := NewRootCommand(t.Context())
+
+	if found, _, err := cmd.Find([]string{"lab"}); err == nil && found != nil && found.Name() == "lab" {
+		t.Fatal("lab command is still registered on tr1")
+	}
+	if found, _, err := cmd.Find([]string{"preview"}); err == nil && found != nil && found.Name() == "preview" {
+		t.Fatal("preview command is still registered on tr1")
+	}
+	if found, _, err := cmd.Find([]string{"benchmark"}); err == nil && found != nil && found.Name() == "benchmark" {
+		t.Fatal("benchmark command is still registered on tr1")
 	}
 }
