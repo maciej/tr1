@@ -61,41 +61,54 @@ var benchmarkFixtures = []benchmarkFixture{
 }
 
 type station struct {
-	Name    string
-	URL     string
-	Aliases []string
+	Name     string
+	URL      string
+	Language string
+	Aliases  []string
 }
 
 var stations = []station{
 	{
-		Name:    "TokFM",
-		URL:     "http://www.tuba.fm/stream.pls?radio=10&mp3=1",
-		Aliases: []string{"tokfm", "tok", "tok-fm"},
+		Name:     "TokFM",
+		URL:      "http://www.tuba.fm/stream.pls?radio=10&mp3=1",
+		Language: "Polish",
+		Aliases:  []string{"tokfm", "tok", "tok-fm"},
 	},
 	{
-		Name:    "Polskie Radio Jedynka",
-		URL:     "http://stream3.polskieradio.pl:8900/listen.pls",
-		Aliases: []string{"jedynka", "pr1", "program1", "program-1", "radio1", "radio-1", "one", "1"},
+		Name:     "Polskie Radio Jedynka",
+		URL:      "http://stream3.polskieradio.pl:8900/listen.pls",
+		Language: "Polish",
+		Aliases:  []string{"jedynka", "pr1", "program1", "program-1", "radio1", "radio-1", "one", "1"},
 	},
 	{
-		Name:    "Program Drugi Polskiego Radia",
-		URL:     "http://stream3.polskieradio.pl:8902/listen.pls",
-		Aliases: []string{"dwojka", "dwójka", "pr2", "program2", "program-2", "drugi", "radio2", "radio-2", "two", "2"},
+		Name:     "Program Drugi Polskiego Radia",
+		URL:      "http://stream3.polskieradio.pl:8902/listen.pls",
+		Language: "Polish",
+		Aliases:  []string{"dwojka", "dwójka", "pr2", "program2", "program-2", "drugi", "radio2", "radio-2", "two", "2"},
 	},
 	{
-		Name:    "Trójka",
-		URL:     "http://stream3.polskieradio.pl:8904/listen.pls",
-		Aliases: []string{"trojka", "trójka", "pr3", "program3", "program-3", "troika", "radio3", "radio-3", "three", "3"},
+		Name:     "Trójka",
+		URL:      "http://stream3.polskieradio.pl:8904/listen.pls",
+		Language: "Polish",
+		Aliases:  []string{"trojka", "trójka", "pr3", "program3", "program-3", "troika", "radio3", "radio-3", "three", "3"},
 	},
 	{
-		Name:    "RMF FM",
-		URL:     "https://rs201-krk-cyfronet.rmfstream.pl/rmf_fm",
-		Aliases: []string{"rmf", "rmffm", "rmf-fm"},
+		Name:     "RMF FM",
+		URL:      "https://rs201-krk-cyfronet.rmfstream.pl/rmf_fm",
+		Language: "Polish",
+		Aliases:  []string{"rmf", "rmffm", "rmf-fm"},
 	},
 	{
-		Name:    "Radio ZET",
-		URL:     "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO_ZET_SC",
-		Aliases: []string{"zet", "radiozet", "radio-zet"},
+		Name:     "Radio ZET",
+		URL:      "https://playerservices.streamtheworld.com/api/livestream-redirect/RADIO_ZET_SC",
+		Language: "Polish",
+		Aliases:  []string{"zet", "radiozet", "radio-zet"},
+	},
+	{
+		Name:     "BBC World Service",
+		URL:      "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service",
+		Language: "English",
+		Aliases:  []string{"bbc", "bbcws", "bbc-world-service", "worldservice", "world-service", "english"},
 	},
 }
 
@@ -108,6 +121,7 @@ type config struct {
 	model         string
 	models        string
 	language      string
+	languageSet   bool
 	backend       string
 	chunkSeconds  int
 	stepSeconds   int
@@ -181,6 +195,7 @@ func defaultConfig() config {
 		model:         getenv("TR1_MODEL", "medium"),
 		models:        getenv("TR1_MODELS", "tiny,base"),
 		language:      getenv("TR1_LANGUAGE", "Polish"),
+		languageSet:   envHasValue("TR1_LANGUAGE"),
 		backend:       getenv("TR1_BACKEND", backendAuto),
 		chunkSeconds:  intFromEnv("TR1_CHUNK_SECONDS", 24),
 		stepSeconds:   intFromEnv("TR1_STEP_SECONDS", 12),
@@ -215,6 +230,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 			if err := applyStationArg(&cfg, args); err != nil {
 				return err
 			}
+			markLanguageOverride(&cfg, cmd)
 			if err := validateStreamConfig(cfg); err != nil {
 				return err
 			}
@@ -227,6 +243,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 
 	command := func(validate func(config) error, run func(context.Context, config) error) func(*cobra.Command, []string) error {
 		return func(cmd *cobra.Command, args []string) error {
+			markLanguageOverride(&cfg, cmd)
 			if validate == nil {
 				return run(ctx, cfg)
 			}
@@ -245,6 +262,7 @@ func NewRootCommand(ctx context.Context) *cobra.Command {
 			if err := applyStationArg(&cfg, args); err != nil {
 				return err
 			}
+			markLanguageOverride(&cfg, cmd)
 			return command(validateStreamConfig, runStream)(cmd, nil)
 		},
 	}
@@ -317,7 +335,7 @@ func NewLabCommand(ctx context.Context) *cobra.Command {
 
 func writeStations(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ALIAS\tNAME\tURL\tALIASES"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ALIAS\tNAME\tLANGUAGE\tURL\tALIASES"); err != nil {
 		return err
 	}
 	for _, s := range stations {
@@ -325,7 +343,7 @@ func writeStations(w io.Writer) error {
 		if len(s.Aliases) > 0 {
 			primaryAlias = s.Aliases[0]
 		}
-		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", primaryAlias, s.Name, s.URL, strings.Join(s.Aliases, ", ")); err != nil {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", primaryAlias, s.Name, s.Language, s.URL, strings.Join(s.Aliases, ", ")); err != nil {
 			return err
 		}
 	}
@@ -428,6 +446,10 @@ func validateStreamConfig(cfg config) error {
 }
 
 func runStream(ctx context.Context, cfg config) error {
+	selectedStation, stationURL, err := applySelectedStationDefaults(&cfg)
+	if err != nil {
+		return err
+	}
 	backend, err := prepareBackend(ctx, &cfg)
 	if err != nil {
 		return err
@@ -436,10 +458,6 @@ func runStream(ctx context.Context, cfg config) error {
 		return err
 	}
 
-	selectedStation, stationURL, err := streamSelection(cfg)
-	if err != nil {
-		return err
-	}
 	streamURL, err := resolveStreamURL(ctx, stationURL)
 	if err != nil {
 		return err
@@ -1577,6 +1595,26 @@ func applyStationArg(cfg *config, args []string) error {
 	return nil
 }
 
+func markLanguageOverride(cfg *config, cmd *cobra.Command) {
+	if cmd != nil && cmd.Flags().Changed("language") {
+		cfg.languageSet = true
+	}
+}
+
+func applySelectedStationDefaults(cfg *config) (string, string, error) {
+	if cfg.streamURL != "" {
+		return "custom stream", cfg.streamURL, nil
+	}
+	selected, err := lookupStation(cfg.station)
+	if err != nil {
+		return "", "", err
+	}
+	if !cfg.languageSet && selected.Language != "" {
+		cfg.language = selected.Language
+	}
+	return selected.Name, selected.URL, nil
+}
+
 func streamSelection(cfg config) (string, string, error) {
 	if cfg.streamURL != "" {
 		return "custom stream", cfg.streamURL, nil
@@ -1971,6 +2009,11 @@ func getenv(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envHasValue(name string) bool {
+	value, ok := os.LookupEnv(name)
+	return ok && value != ""
 }
 
 func intFromEnv(name string, fallback int) int {

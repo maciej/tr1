@@ -25,6 +25,9 @@ func TestLookupStationAliases(t *testing.T) {
 		"rmf-fm":                        "RMF FM",
 		"zet":                           "Radio ZET",
 		"Radio ZET":                     "Radio ZET",
+		"bbc":                           "BBC World Service",
+		"bbc-world-service":             "BBC World Service",
+		"english":                       "BBC World Service",
 	}
 
 	for query, want := range tests {
@@ -35,6 +38,57 @@ func TestLookupStationAliases(t *testing.T) {
 		if got.Name != want {
 			t.Fatalf("lookupStation(%q) = %q, want %q", query, got.Name, want)
 		}
+	}
+}
+
+func TestApplySelectedStationDefaultsUsesStationLanguage(t *testing.T) {
+	cfg := config{station: "bbc", language: "Polish"}
+
+	name, url, err := applySelectedStationDefaults(&cfg)
+	if err != nil {
+		t.Fatalf("applySelectedStationDefaults returned error: %v", err)
+	}
+	if name != "BBC World Service" {
+		t.Fatalf("station name = %q, want BBC World Service", name)
+	}
+	if url != "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service" {
+		t.Fatalf("station URL = %q, want BBC World Service URL", url)
+	}
+	if cfg.language != "English" {
+		t.Fatalf("language = %q, want English", cfg.language)
+	}
+}
+
+func TestApplySelectedStationDefaultsKeepsLanguageOverride(t *testing.T) {
+	cfg := config{station: "bbc", language: "Spanish", languageSet: true}
+
+	if _, _, err := applySelectedStationDefaults(&cfg); err != nil {
+		t.Fatalf("applySelectedStationDefaults returned error: %v", err)
+	}
+	if cfg.language != "Spanish" {
+		t.Fatalf("language = %q, want explicit override Spanish", cfg.language)
+	}
+}
+
+func TestApplySelectedStationDefaultsSkipsCustomStream(t *testing.T) {
+	cfg := config{
+		station:   "bbc",
+		streamURL: "https://example.com/custom.mp3",
+		language:  "Polish",
+	}
+
+	name, url, err := applySelectedStationDefaults(&cfg)
+	if err != nil {
+		t.Fatalf("applySelectedStationDefaults returned error: %v", err)
+	}
+	if name != "custom stream" {
+		t.Fatalf("station name = %q, want custom stream", name)
+	}
+	if url != "https://example.com/custom.mp3" {
+		t.Fatalf("station URL = %q, want custom URL", url)
+	}
+	if cfg.language != "Polish" {
+		t.Fatalf("language = %q, want unchanged Polish", cfg.language)
 	}
 }
 
@@ -212,9 +266,14 @@ func TestStationsCommandListsAvailableStations(t *testing.T) {
 	for _, want := range []string{
 		"ALIAS",
 		"NAME",
+		"LANGUAGE",
 		"URL",
 		"tokfm",
 		"TokFM",
+		"Polish",
+		"bbc",
+		"BBC World Service",
+		"English",
 		"trojka, trójka, pr3, program3, program-3, troika, radio3, radio-3, three, 3",
 		"https://rs201-krk-cyfronet.rmfstream.pl/rmf_fm",
 	} {

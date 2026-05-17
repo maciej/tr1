@@ -26,20 +26,22 @@ TokFM is the default station. Pick another station with a short alias:
 go run ./cmd/tr1 rmf
 go run ./cmd/tr1 stream zet
 go run ./cmd/tr1 --station trojka
+go run ./cmd/tr1 bbc
 ```
 
 Supported stations:
 
-| Canonical name | Convenient aliases |
-| --- | --- |
-| TokFM | `tokfm`, `tok`, `tok-fm` |
-| Polskie Radio Jedynka | `jedynka`, `pr1`, `1` |
-| Program Drugi Polskiego Radia | `dwojka`, `dwójka`, `pr2`, `2` |
-| Trójka | `trojka`, `trójka`, `pr3`, `3` |
-| RMF FM | `rmf`, `rmffm`, `rmf-fm` |
-| Radio ZET | `zet`, `radiozet`, `radio-zet` |
+| Canonical name | Default language | Convenient aliases |
+| --- | --- | --- |
+| TokFM | Polish | `tokfm`, `tok`, `tok-fm` |
+| Polskie Radio Jedynka | Polish | `jedynka`, `pr1`, `1` |
+| Program Drugi Polskiego Radia | Polish | `dwojka`, `dwójka`, `pr2`, `2` |
+| Trójka | Polish | `trojka`, `trójka`, `pr3`, `3` |
+| RMF FM | Polish | `rmf`, `rmffm`, `rmf-fm` |
+| Radio ZET | Polish | `zet`, `radiozet`, `radio-zet` |
+| BBC World Service | English | `bbc`, `bbcws`, `english` |
 
-You can also set `TR1_STATION`, or pass `--stream-url` / `TR1_STREAM_URL` to use a custom stream URL directly.
+Each station sets Whisper's default language. You can override it with `--language` / `TR1_LANGUAGE`. You can also set `TR1_STATION`, or pass `--stream-url` / `TR1_STREAM_URL` to use a custom stream URL directly.
 
 ## Requirements
 
