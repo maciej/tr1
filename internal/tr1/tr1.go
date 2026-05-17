@@ -136,6 +136,7 @@ type config struct {
 	sagVoice      string
 	fixture       string
 	wordDelay     time.Duration
+	spinner       bool
 	previewOut    string
 	benchmarkMode string
 	initialPrompt string
@@ -210,6 +211,7 @@ func defaultConfig() config {
 		sagVoice:      getenv("TR1_SAG_VOICE", ""),
 		fixture:       getenv("TR1_FIXTURE", defaultFixtureName),
 		wordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
+		spinner:       boolFromEnv("TR1_SPINNER", true),
 		previewOut:    "",
 		benchmarkMode: getenv("TR1_BENCHMARK_MODE", benchmarkModeWhole),
 		initialPrompt: "Polski serwis informacyjny radiowy. Poprawna polska interpunkcja i nazwy własne.",
@@ -395,6 +397,7 @@ func addStreamFlags(cmd *cobra.Command, cfg *config) {
 	flags.StringVar(&cfg.ffplayBin, "ffplay-bin", cfg.ffplayBin, "ffplay executable used by --play")
 	flags.BoolVar(&cfg.monitorAudio, "play", cfg.monitorAudio, "play live stream audio through the system audio output while transcribing")
 	flags.DurationVar(&cfg.wordDelay, "word-delay", cfg.wordDelay, "delay between printed words")
+	flags.BoolVar(&cfg.spinner, "spinner", cfg.spinner, "show an interactive waiting spinner between transcription updates")
 	flags.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back live words near the unstable end of each window")
 	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
 }
@@ -497,8 +500,11 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 	status(cfg, "ffmpeg", "streaming raw 16 kHz PCM")
 	status(cfg, "whisper", fmt.Sprintf("streaming %ds rolling windows every %ds", cfg.chunkSeconds, cfg.stepSeconds))
 
-	wordWriter := newTerminalWordWriter(os.Stdout)
+	wordWriter := newTerminalWordWriter(os.Stdout, cfg.spinner)
 	defer wordWriter.close()
+	if err := wordWriter.tickTuning(); err != nil {
+		return err
+	}
 
 	var pcm []byte
 	readBuf := make([]byte, 4096)
@@ -506,6 +512,7 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 	seq := 0
 	totalBytes := 0
 	printedUntil := 0.0
+	transcriptStarted := false
 	pending := map[int]whisperResponse{}
 	nextPrintSeq := 1
 
@@ -575,24 +582,54 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 				}
 			}
 			if resp.Error != "" {
+				if err := wordWriter.clearEphemeral(); err != nil {
+					return err
+				}
 				status(cfg, "whisper", fmt.Sprintf("window %d failed: %s", resp.Seq, resp.Error))
-			} else if err := printStableWords(ctx, cfg, wordWriter, resp, windowEnd-holdbackSeconds, &printedUntil); err != nil {
-				return err
+			} else {
+				before := printedUntil
+				if err := printStableWords(ctx, cfg, wordWriter, resp, windowEnd-holdbackSeconds, &printedUntil); err != nil {
+					return err
+				}
+				if printedUntil > before {
+					transcriptStarted = true
+				}
 			}
 			nextPrintSeq++
 		}
-
+		if ctx.Err() != nil {
+			if err := wordWriter.clearEphemeral(); err != nil {
+				return err
+			}
+			return ctx.Err()
+		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) || isClosedPipeError(readErr) {
 				break
 			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
 			return readErr
 		}
+		if transcriptStarted {
+			if err := wordWriter.tickSpinner(); err != nil {
+				return err
+			}
+		} else if err := wordWriter.tickTuning(); err != nil {
+			return err
+		}
+
 		select {
+		case <-ctx.Done():
+			if err := wordWriter.clearEphemeral(); err != nil {
+				return err
+			}
+			return ctx.Err()
 		case err := <-ffmpegDone:
+			if ctx.Err() != nil {
+				if clearErr := wordWriter.clearEphemeral(); clearErr != nil {
+					return clearErr
+				}
+				return ctx.Err()
+			}
 			if err != nil && !errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -864,10 +901,17 @@ func printStableWords(ctx context.Context, cfg config, writer *terminalWordWrite
 }
 
 type terminalWordWriter struct {
-	out        io.Writer
-	columns    *terminalColumns
-	col        int
-	stopResize func()
+	out            io.Writer
+	columns        *terminalColumns
+	col            int
+	spinnerEnabled bool
+	spinnerVisible bool
+	spinnerFrame   int
+	spinnerWidth   int
+	tuningVisible  bool
+	tuningFrame    int
+	tuningWidth    int
+	stopResize     func()
 }
 
 type terminalColumns struct {
@@ -877,13 +921,17 @@ type terminalColumns struct {
 	provider func(uintptr) (int, bool)
 }
 
-func newTerminalWordWriter(file *os.File) *terminalWordWriter {
+var terminalSpinnerFrames = []string{"⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"}
+var terminalTuningFrames = []string{"📻 Tuning in.", "📻 Tuning in..", "📻 Tuning in..."}
+
+func newTerminalWordWriter(file *os.File, spinner bool) *terminalWordWriter {
 	columns := newTerminalColumns(file)
 	stopResize := startTerminalResizeListener(context.Background(), columns, nil)
 	return &terminalWordWriter{
-		out:        file,
-		columns:    columns,
-		stopResize: stopResize,
+		out:            file,
+		columns:        columns,
+		spinnerEnabled: spinner && columns.enabled,
+		stopResize:     stopResize,
 	}
 }
 
@@ -906,12 +954,16 @@ func newTestTerminalWordWriter(out io.Writer, width int) *terminalWordWriter {
 }
 
 func (w *terminalWordWriter) close() {
+	_ = w.clearEphemeral()
 	if w.stopResize != nil {
 		w.stopResize()
 	}
 }
 
 func (w *terminalWordWriter) writeWord(text string, trailingSpace bool) error {
+	if err := w.clearEphemeral(); err != nil {
+		return err
+	}
 	width := w.columns.current()
 	textWidth := displayWidth(text)
 	spaceWidth := 0
@@ -935,6 +987,91 @@ func (w *terminalWordWriter) writeWord(text string, trailingSpace bool) error {
 		w.col += spaceWidth
 	}
 	return nil
+}
+
+func (w *terminalWordWriter) tickSpinner() error {
+	if w == nil || !w.spinnerEnabled || len(terminalSpinnerFrames) == 0 {
+		return nil
+	}
+	if err := w.clearEphemeral(); err != nil {
+		return err
+	}
+	text := " " + terminalSpinnerFrames[w.spinnerFrame%len(terminalSpinnerFrames)]
+	textWidth := displayWidth(text)
+	if width := w.columns.current(); width > 0 && w.col+textWidth > width {
+		return nil
+	}
+	if _, err := fmt.Fprint(w.out, text); err != nil {
+		return err
+	}
+	w.spinnerVisible = true
+	w.spinnerWidth = textWidth
+	w.spinnerFrame++
+	return nil
+}
+
+func (w *terminalWordWriter) tickTuning() error {
+	if w == nil || !w.spinnerEnabled || len(terminalTuningFrames) == 0 {
+		return nil
+	}
+	if err := w.clearEphemeral(); err != nil {
+		return err
+	}
+	text := terminalTuningFrames[w.tuningFrame%len(terminalTuningFrames)]
+	textWidth := displayWidth(text)
+	if width := w.columns.current(); width > 0 && w.col+textWidth > width {
+		return nil
+	}
+	if _, err := fmt.Fprint(w.out, text); err != nil {
+		return err
+	}
+	w.tuningVisible = true
+	w.tuningWidth = textWidth
+	w.tuningFrame++
+	return nil
+}
+
+func (w *terminalWordWriter) clearEphemeral() error {
+	if err := w.clearSpinner(); err != nil {
+		return err
+	}
+	if err := w.clearTuning(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (w *terminalWordWriter) clearSpinner() error {
+	if w == nil || !w.spinnerVisible {
+		return nil
+	}
+	if err := w.eraseEphemeral(w.spinnerWidth); err != nil {
+		return err
+	}
+	w.spinnerVisible = false
+	w.spinnerWidth = 0
+	return nil
+}
+
+func (w *terminalWordWriter) clearTuning() error {
+	if w == nil || !w.tuningVisible {
+		return nil
+	}
+	if err := w.eraseEphemeral(w.tuningWidth); err != nil {
+		return err
+	}
+	w.tuningVisible = false
+	w.tuningWidth = 0
+	return nil
+}
+
+func (w *terminalWordWriter) eraseEphemeral(width int) error {
+	if width <= 0 {
+		return nil
+	}
+	erase := strings.Repeat("\b", width) + strings.Repeat(" ", width) + strings.Repeat("\b", width)
+	_, err := fmt.Fprint(w.out, erase)
+	return err
 }
 
 func (c *terminalColumns) current() int {
@@ -1018,7 +1155,8 @@ func isWideRune(r rune) bool {
 		(r >= 0xFE10 && r <= 0xFE19) ||
 		(r >= 0xFE30 && r <= 0xFE6F) ||
 		(r >= 0xFF00 && r <= 0xFF60) ||
-		(r >= 0xFFE0 && r <= 0xFFE6)
+		(r >= 0xFFE0 && r <= 0xFFE6) ||
+		(r >= 0x1F300 && r <= 0x1FAFF)
 }
 
 func appendStableWords(resp whisperResponse, stableUntil float64, printedUntil *float64, out *[]string) {

@@ -180,6 +180,196 @@ func TestTerminalWordWriterLeavesPipedOutputUnwrapped(t *testing.T) {
 	}
 }
 
+func TestTerminalWordWriterSpinnerClearsBeforeWord(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 20)
+	writer.spinnerEnabled = true
+
+	if err := writer.tickSpinner(); err != nil {
+		t.Fatalf("tickSpinner returned error: %v", err)
+	}
+	if err := writer.writeWord("hello", true); err != nil {
+		t.Fatalf("writeWord returned error: %v", err)
+	}
+
+	want := " ⣾\b\b  \b\bhello "
+	if got := out.String(); got != want {
+		t.Fatalf("spinner output = %q, want %q", got, want)
+	}
+	if writer.col != 6 {
+		t.Fatalf("writer col = %d, want 6", writer.col)
+	}
+}
+
+func TestTerminalWordWriterSpinnerTicksFrames(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 20)
+	writer.spinnerEnabled = true
+
+	if err := writer.tickSpinner(); err != nil {
+		t.Fatalf("first tickSpinner returned error: %v", err)
+	}
+	if err := writer.tickSpinner(); err != nil {
+		t.Fatalf("second tickSpinner returned error: %v", err)
+	}
+
+	want := " ⣾\b\b  \b\b ⣽"
+	if got := out.String(); got != want {
+		t.Fatalf("spinner output = %q, want %q", got, want)
+	}
+	if writer.col != 0 {
+		t.Fatalf("writer col = %d, want 0", writer.col)
+	}
+}
+
+func TestTerminalWordWriterSpinnerSkipsWhenDisabled(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 20)
+
+	if err := writer.tickSpinner(); err != nil {
+		t.Fatalf("tickSpinner returned error: %v", err)
+	}
+	if got := out.String(); got != "" {
+		t.Fatalf("spinner output = %q, want empty output", got)
+	}
+}
+
+func TestTerminalWordWriterSpinnerDoesNotWrapLine(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 6)
+	writer.spinnerEnabled = true
+
+	if err := writer.writeWord("hello", true); err != nil {
+		t.Fatalf("writeWord returned error: %v", err)
+	}
+	if err := writer.tickSpinner(); err != nil {
+		t.Fatalf("tickSpinner returned error: %v", err)
+	}
+
+	want := "hello "
+	if got := out.String(); got != want {
+		t.Fatalf("spinner output = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalWordWriterCloseClearsSpinner(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 20)
+	writer.spinnerEnabled = true
+
+	if err := writer.tickSpinner(); err != nil {
+		t.Fatalf("tickSpinner returned error: %v", err)
+	}
+	writer.close()
+
+	want := " ⣾" + eraseCells(displayWidth(" ⣾"))
+	if got := out.String(); got != want {
+		t.Fatalf("close output = %q, want %q", got, want)
+	}
+}
+
+func TestTerminalWordWriterTuningTicksFrames(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 30)
+	writer.spinnerEnabled = true
+
+	if err := writer.tickTuning(); err != nil {
+		t.Fatalf("first tickTuning returned error: %v", err)
+	}
+	if err := writer.tickTuning(); err != nil {
+		t.Fatalf("second tickTuning returned error: %v", err)
+	}
+	if err := writer.tickTuning(); err != nil {
+		t.Fatalf("third tickTuning returned error: %v", err)
+	}
+
+	want := "📻 Tuning in." + eraseCells(displayWidth("📻 Tuning in.")) +
+		"📻 Tuning in.." + eraseCells(displayWidth("📻 Tuning in..")) +
+		"📻 Tuning in..."
+	if got := out.String(); got != want {
+		t.Fatalf("tuning output = %q, want %q", got, want)
+	}
+	if writer.col != 0 {
+		t.Fatalf("writer col = %d, want 0", writer.col)
+	}
+}
+
+func TestTerminalWordWriterTuningClearsBeforeFirstWord(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 30)
+	writer.spinnerEnabled = true
+
+	if err := writer.tickTuning(); err != nil {
+		t.Fatalf("tickTuning returned error: %v", err)
+	}
+	if err := writer.writeWord("hello", true); err != nil {
+		t.Fatalf("writeWord returned error: %v", err)
+	}
+
+	want := "📻 Tuning in." + eraseCells(displayWidth("📻 Tuning in.")) + "hello "
+	if got := out.String(); got != want {
+		t.Fatalf("tuning output = %q, want %q", got, want)
+	}
+	if writer.col != 6 {
+		t.Fatalf("writer col = %d, want 6", writer.col)
+	}
+}
+
+func TestTerminalWordWriterCloseClearsTuning(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 30)
+	writer.spinnerEnabled = true
+
+	if err := writer.tickTuning(); err != nil {
+		t.Fatalf("tickTuning returned error: %v", err)
+	}
+	writer.close()
+
+	want := "📻 Tuning in." + eraseCells(displayWidth("📻 Tuning in."))
+	if got := out.String(); got != want {
+		t.Fatalf("close output = %q, want %q", got, want)
+	}
+}
+
+func TestDisplayWidthCountsEmojiAsWide(t *testing.T) {
+	if got := displayWidth("📻"); got != 2 {
+		t.Fatalf("displayWidth(radio emoji) = %d, want 2", got)
+	}
+}
+
+func TestTerminalWordWriterSpinnerAppearsAfterPrintedWords(t *testing.T) {
+	var out bytes.Buffer
+	writer := newTestTerminalWordWriter(&out, 20)
+	writer.spinnerEnabled = true
+	printedUntil := 0.0
+
+	resp := whisperResponse{
+		Seq:      1,
+		Offset:   0,
+		Duration: 10,
+		Words: []whisperWord{
+			{Word: " hello", Start: 0, End: 1},
+			{Word: " world", Start: 1, End: 2},
+		},
+	}
+
+	if err := printStableWords(t.Context(), config{}, writer, resp, 10, &printedUntil); err != nil {
+		t.Fatalf("printStableWords returned error: %v", err)
+	}
+	if err := writer.tickSpinner(); err != nil {
+		t.Fatalf("tickSpinner returned error: %v", err)
+	}
+
+	want := "hello world  ⣾"
+	if got := out.String(); got != want {
+		t.Fatalf("spinner output = %q, want %q", got, want)
+	}
+}
+
+func eraseCells(width int) string {
+	return strings.Repeat("\b", width) + strings.Repeat(" ", width) + strings.Repeat("\b", width)
+}
+
 func TestPrintStableWordsUsesTerminalWriter(t *testing.T) {
 	var out bytes.Buffer
 	writer := newTestTerminalWordWriter(&out, 17)
