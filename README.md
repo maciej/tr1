@@ -68,6 +68,33 @@ ELEVENLABS_API_KEY=... go run ./cmd/tr1-lab preview --fixture biebrza-broadcast 
 go run ./cmd/tr1-lab benchmark --fixture biebrza-broadcast --models tiny,base,small,medium
 ```
 
+Record raw broadcast chunks for later lab work:
+
+```sh
+go run ./cmd/tr1-lab record tokfm
+go run ./cmd/tr1-lab record --segment-duration 10m bbc
+go run ./cmd/tr1-lab record list
+go run ./cmd/tr1-lab record list tokfm
+go run ./cmd/tr1-lab record transcribe bbc --model tiny
+go run ./cmd/tr1-lab record transcribe ~/.cache/tr1/recordings/tokfm/2026/05/18/tokfm_20260518T120000Z.mka
+```
+
+Recordings are written under the tr1 cache root: `$XDG_CACHE_HOME/tr1` when `XDG_CACHE_HOME` is set, otherwise `~/.cache/tr1` including on macOS. Files are grouped by station and UTC date:
+
+```text
+~/.cache/tr1/recordings/tokfm/2026/05/18/tokfm_20260518T120000Z.mka
+```
+
+The filename timestamp is UTC and marks the segment start. `ffmpeg` is run in a supervised loop with reconnect flags and wall-clock segmenting, so if the stream drops the lab command waits briefly and starts recording again. Override the cache root with `--cache-dir` / `TR1_CACHE_DIR`, the chunk size with `--segment-duration` / `TR1_RECORD_SEGMENT_DURATION`, and restart backoff with `--restart-delay` / `TR1_RECORD_RESTART_DELAY`.
+
+`record transcribe` accepts either a recording path or a station alias; for a station alias it uses the latest cached chunk for that station. Transcription results are cached under the same cache root with a versioned layout:
+
+```text
+~/.cache/tr1/transcripts/transcribe-v1/bbc/2026/05/18/bbc-20260518t120000z/cpu/tiny/english.json
+```
+
+The cached JSON wraps the Whisper output with the recording path, UTC segment start, backend, model, language, and cache version. Pass `--force` to recompute a cached transcript.
+
 ## Codex worktrees
 
 Codex worktrees are normal Git worktrees, so ignored files like `.env` and generated `assets/*.mp3` do not move with a thread. The checked-in Codex local environment config at `.codex/environments/environment.toml` copies `.env` and generated media from `assets/` into new worktrees. It finds the main checkout through Git's common directory, so it does not depend on a hard-coded username or checkout path.

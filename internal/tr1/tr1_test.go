@@ -3,6 +3,7 @@ package tr1
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -493,6 +494,12 @@ func TestLabExecutableOwnsNonEndUserCommands(t *testing.T) {
 	if found, _, err := cmd.Find([]string{"benchmark"}); err != nil || found == nil || found.Name() != "benchmark" {
 		t.Fatalf("benchmark command lookup failed: command=%v err=%v", found, err)
 	}
+	if found, _, err := cmd.Find([]string{"record"}); err != nil || found == nil || found.Name() != "record" {
+		t.Fatalf("record command lookup failed: command=%v err=%v", found, err)
+	}
+	if found, _, err := cmd.Find([]string{"record", "list"}); err != nil || found == nil || found.Name() != "list" {
+		t.Fatalf("record list command lookup failed: command=%v err=%v", found, err)
+	}
 	if found, _, err := cmd.Find([]string{"preview-local"}); err == nil && found != nil && found.Name() == "preview-local" {
 		t.Fatal("preview-local command is still registered")
 	}
@@ -509,5 +516,256 @@ func TestRootCommandExcludesNonEndUserCommands(t *testing.T) {
 	}
 	if found, _, err := cmd.Find([]string{"benchmark"}); err == nil && found != nil && found.Name() == "benchmark" {
 		t.Fatal("benchmark command is still registered on tr1")
+	}
+}
+
+func TestRecordingCacheRootUsesXDGCacheHome(t *testing.T) {
+	cacheHome := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+
+	got, err := recordingCacheRoot(config{})
+	if err != nil {
+		t.Fatalf("recordingCacheRoot returned error: %v", err)
+	}
+	want := filepath.Join(cacheHome, "tr1")
+	if got != want {
+		t.Fatalf("recording cache root = %q, want %q", got, want)
+	}
+}
+
+func TestRecordingCacheRootUsesExplicitCacheDirAsRoot(t *testing.T) {
+	cacheRoot := t.TempDir()
+
+	got, err := recordingCacheRoot(config{cacheDir: cacheRoot})
+	if err != nil {
+		t.Fatalf("recordingCacheRoot returned error: %v", err)
+	}
+	if got != cacheRoot {
+		t.Fatalf("recording cache root = %q, want explicit root %q", got, cacheRoot)
+	}
+}
+
+func TestRecordingSegmentPatternUsesUTCStrftimePath(t *testing.T) {
+	cacheRoot := t.TempDir()
+
+	got := recordingSegmentPattern(cacheRoot, "tokfm")
+	want := filepath.Join(cacheRoot, "recordings", "tokfm", "%Y", "%m", "%d", "tokfm_%Y%m%dT%H%M%SZ.mka")
+	if got != want {
+		t.Fatalf("recording segment pattern = %q, want %q", got, want)
+	}
+}
+
+func TestRecordListCommandListsStationRecordings(t *testing.T) {
+	cacheRoot := t.TempDir()
+	tokPath := filepath.Join(cacheRoot, "recordings", "tokfm", "2026", "05", "18", "tokfm_20260518T120000Z.mka")
+	rmfPath := filepath.Join(cacheRoot, "recordings", "rmf", "2026", "05", "18", "rmf_20260518T130000Z.mka")
+	for _, path := range []string{tokPath, rmfPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll returned error: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("audio"), 0o644); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+	}
+
+	cmd := NewLabCommand(t.Context())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"record", "list", "--cache-dir", cacheRoot, "tok"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("record list command returned error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"START_UTC", "STATION", "BYTES", "PATH", "2026-05-18T12:00:00Z", "tokfm", tokPath} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("record list output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, rmfPath) {
+		t.Fatalf("record list output included another station:\n%s", got)
+	}
+}
+
+func TestRecordListCommandWithoutStationListsAllRecordings(t *testing.T) {
+	cacheRoot := t.TempDir()
+	for _, path := range []string{
+		filepath.Join(cacheRoot, "recordings", "tokfm", "2026", "05", "18", "tokfm_20260518T120000Z.mka"),
+		filepath.Join(cacheRoot, "recordings", "rmf", "2026", "05", "18", "rmf_20260518T130000Z.mka"),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll returned error: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("audio"), 0o644); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+	}
+
+	cmd := NewLabCommand(t.Context())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"record", "list", "--cache-dir", cacheRoot})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("record list command returned error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"tokfm", "rmf", "2026-05-18T12:00:00Z", "2026-05-18T13:00:00Z"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("record list output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRecordListSkipsEmptyInterruptedSegments(t *testing.T) {
+	cacheRoot := t.TempDir()
+	fullPath := filepath.Join(cacheRoot, "recordings", "bbc", "2026", "05", "18", "bbc_20260518T120000Z.mka")
+	emptyPath := filepath.Join(cacheRoot, "recordings", "bbc", "2026", "05", "18", "bbc_20260518T120500Z.mka")
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(fullPath, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("WriteFile full recording returned error: %v", err)
+	}
+	if err := os.WriteFile(emptyPath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile empty recording returned error: %v", err)
+	}
+
+	recordings, err := listRecordings(cacheRoot, "bbc")
+	if err != nil {
+		t.Fatalf("listRecordings returned error: %v", err)
+	}
+	if len(recordings) != 1 {
+		t.Fatalf("recording count = %d, want 1: %#v", len(recordings), recordings)
+	}
+	if recordings[0].Path != fullPath {
+		t.Fatalf("recording path = %q, want %q", recordings[0].Path, fullPath)
+	}
+}
+
+func TestRecordingTranscriptPathIsVersionedByRecordingAndModel(t *testing.T) {
+	cacheRoot := t.TempDir()
+	rec := recording{
+		Station:  "bbc",
+		StartUTC: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC),
+		Path:     filepath.Join(cacheRoot, "recordings", "bbc", "2026", "05", "18", "bbc_20260518T120000Z.mka"),
+	}
+
+	got := recordingTranscriptPath(cacheRoot, rec, backendCPU, config{model: "tiny.en", language: "English"})
+	want := filepath.Join(cacheRoot, "transcripts", transcriptCacheV1, "bbc", "2026", "05", "18", "bbc-20260518t120000z", "cpu", "tiny-en", "english.json")
+	if got != want {
+		t.Fatalf("recording transcript path = %q, want %q", got, want)
+	}
+}
+
+func TestResolveRecordingTargetPicksLatestStationRecording(t *testing.T) {
+	cacheRoot := t.TempDir()
+	oldPath := filepath.Join(cacheRoot, "recordings", "bbc", "2026", "05", "18", "bbc_20260518T120000Z.mka")
+	newPath := filepath.Join(cacheRoot, "recordings", "bbc", "2026", "05", "18", "bbc_20260518T121500Z.mka")
+	for _, path := range []string{oldPath, newPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("MkdirAll returned error: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("audio"), 0o644); err != nil {
+			t.Fatalf("WriteFile returned error: %v", err)
+		}
+	}
+
+	rec, err := resolveRecordingTarget(cacheRoot, "bbc")
+	if err != nil {
+		t.Fatalf("resolveRecordingTarget returned error: %v", err)
+	}
+	if rec.Path != newPath {
+		t.Fatalf("resolved recording path = %q, want latest %q", rec.Path, newPath)
+	}
+}
+
+func TestRecordTranscribeCommandFindsCachedTranscript(t *testing.T) {
+	cacheRoot := t.TempDir()
+	recordingPath := filepath.Join(cacheRoot, "recordings", "bbc", "2026", "05", "18", "bbc_20260518T120000Z.mka")
+	if err := os.MkdirAll(filepath.Dir(recordingPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll recording returned error: %v", err)
+	}
+	if err := os.WriteFile(recordingPath, []byte("audio"), 0o644); err != nil {
+		t.Fatalf("WriteFile recording returned error: %v", err)
+	}
+	rec := recording{
+		Station:  "bbc",
+		StartUTC: time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC),
+		Path:     recordingPath,
+		Bytes:    5,
+	}
+	transcriptPath := recordingTranscriptPath(cacheRoot, rec, backendCPU, config{model: "tiny", language: "English"})
+	if err := writeRecordingTranscript(transcriptPath, recordingTranscript{
+		Version:  transcriptCacheV1,
+		Created:  "2026-05-18T12:01:00Z",
+		Backend:  backendCPU,
+		Model:    "tiny",
+		Language: "English",
+		Record:   recordingTranscriptRecordingFrom(rec),
+		Whisper:  whisperOutput{Text: "hello"},
+	}); err != nil {
+		t.Fatalf("writeRecordingTranscript returned error: %v", err)
+	}
+
+	cmd := NewLabCommand(t.Context())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"record", "transcribe", "--cache-dir", cacheRoot, "--backend", backendCPU, "--model", "tiny", "bbc"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("record transcribe command returned error: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"cached", transcriptCacheV1, backendCPU, "tiny", "English", transcriptPath} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("record transcribe output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRecordRestartDelayBacksOffAndCaps(t *testing.T) {
+	base := 5 * time.Second
+	tests := map[int]time.Duration{
+		0:  5 * time.Second,
+		1:  5 * time.Second,
+		2:  10 * time.Second,
+		4:  40 * time.Second,
+		10: time.Minute,
+	}
+
+	for attempt, want := range tests {
+		if got := recordRestartDelay(base, attempt); got != want {
+			t.Fatalf("recordRestartDelay(%d) = %s, want %s", attempt, got, want)
+		}
+	}
+}
+
+func TestEnsureRecordingDateDirsCreatesUpcomingUTCDays(t *testing.T) {
+	stationRoot := t.TempDir()
+	now := time.Date(2026, 5, 18, 23, 30, 0, 0, time.UTC)
+
+	if err := ensureRecordingDateDirs(stationRoot, now); err != nil {
+		t.Fatalf("ensureRecordingDateDirs returned error: %v", err)
+	}
+
+	for _, want := range []string{
+		filepath.Join(stationRoot, "2026", "05", "18"),
+		filepath.Join(stationRoot, "2026", "05", "19"),
+		filepath.Join(stationRoot, "2026", "05", "20"),
+	} {
+		info, err := os.Stat(want)
+		if err != nil {
+			t.Fatalf("expected date dir %s: %v", want, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("%s is not a directory", want)
+		}
 	}
 }

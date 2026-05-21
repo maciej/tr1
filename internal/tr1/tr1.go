@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -39,7 +40,11 @@ const (
 	benchmarkModeChunked = "chunked"
 	defaultMLXModelRepo  = "mlx-community/whisper-%s-mlx"
 	defaultFixtureName   = "biebrza-broadcast"
+	defaultRecordExt     = ".mka"
+	transcriptCacheV1    = "transcribe-v1"
 )
+
+const defaultRecordSegmentDuration = 15 * time.Minute
 
 type benchmarkFixture struct {
 	Name           string
@@ -65,6 +70,30 @@ type station struct {
 	URL      string
 	Language string
 	Aliases  []string
+}
+
+type recording struct {
+	Station  string
+	StartUTC time.Time
+	Path     string
+	Bytes    int64
+}
+
+type recordingTranscript struct {
+	Version  string                       `json:"version"`
+	Created  string                       `json:"created_at"`
+	Backend  string                       `json:"backend"`
+	Model    string                       `json:"model"`
+	Language string                       `json:"language"`
+	Record   recordingTranscriptRecording `json:"recording"`
+	Whisper  whisperOutput                `json:"whisper"`
+}
+
+type recordingTranscriptRecording struct {
+	Station  string `json:"station"`
+	StartUTC string `json:"start_utc,omitempty"`
+	Path     string `json:"path"`
+	Bytes    int64  `json:"bytes,omitempty"`
 }
 
 var stations = []station{
@@ -116,32 +145,36 @@ var stations = []station{
 var embeddedPyproject string
 
 type config struct {
-	station       string
-	streamURL     string
-	model         string
-	models        string
-	language      string
-	languageSet   bool
-	backend       string
-	chunkSeconds  int
-	stepSeconds   int
-	holdback      time.Duration
-	workDir       string
-	whisperBin    string
-	uvBin         string
-	pythonBin     string
-	ffmpegBin     string
-	ffplayBin     string
-	sagBin        string
-	sagVoice      string
-	fixture       string
-	wordDelay     time.Duration
-	spinner       bool
-	previewOut    string
-	benchmarkMode string
-	initialPrompt string
-	monitorAudio  bool
-	verbose       bool
+	station         string
+	streamURL       string
+	model           string
+	models          string
+	language        string
+	languageSet     bool
+	backend         string
+	chunkSeconds    int
+	stepSeconds     int
+	holdback        time.Duration
+	workDir         string
+	whisperBin      string
+	uvBin           string
+	pythonBin       string
+	ffmpegBin       string
+	ffplayBin       string
+	cacheDir        string
+	sagBin          string
+	sagVoice        string
+	fixture         string
+	wordDelay       time.Duration
+	recordSegment   time.Duration
+	recordRestart   time.Duration
+	transcribeForce bool
+	spinner         bool
+	previewOut      string
+	benchmarkMode   string
+	initialPrompt   string
+	monitorAudio    bool
+	verbose         bool
 }
 
 type whisperOutput struct {
@@ -207,10 +240,13 @@ func defaultConfig() config {
 		pythonBin:     getenv("TR1_PYTHON_BIN", ""),
 		ffmpegBin:     getenv("TR1_FFMPEG_BIN", "ffmpeg"),
 		ffplayBin:     getenv("TR1_FFPLAY_BIN", "ffplay"),
+		cacheDir:      getenv("TR1_CACHE_DIR", ""),
 		sagBin:        getenv("TR1_SAG_BIN", "sag"),
 		sagVoice:      getenv("TR1_SAG_VOICE", ""),
 		fixture:       getenv("TR1_FIXTURE", defaultFixtureName),
 		wordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
+		recordSegment: durationFromEnv("TR1_RECORD_SEGMENT_DURATION", defaultRecordSegmentDuration),
+		recordRestart: durationFromEnv("TR1_RECORD_RESTART_DELAY", 5*time.Second),
 		spinner:       boolFromEnv("TR1_SPINNER", true),
 		previewOut:    "",
 		benchmarkMode: getenv("TR1_BENCHMARK_MODE", benchmarkModeWhole),
@@ -330,7 +366,58 @@ func NewLabCommand(ctx context.Context) *cobra.Command {
 	}
 	addBenchmarkFlags(benchmarkCmd, &cfg)
 
-	rootCmd.AddCommand(previewCmd, benchmarkCmd)
+	recordCmd := &cobra.Command{
+		Use:   "record [station]",
+		Short: "Record internet radio broadcasts into the tr1 cache",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := applyStationArg(&cfg, args); err != nil {
+				return err
+			}
+			if err := validateRecordConfig(cfg); err != nil {
+				return err
+			}
+			return runRecord(ctx, cfg)
+		},
+	}
+	addRecordFlags(recordCmd, &cfg)
+
+	recordListStation := ""
+	recordListCmd := &cobra.Command{
+		Use:   "list [station]",
+		Short: "List cached broadcast recordings",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) > 0 {
+				cfg.station = args[0]
+			} else if !cmd.Flags().Changed("station") {
+				cfg.station = ""
+			} else {
+				cfg.station = recordListStation
+			}
+			return runRecordList(cmd.OutOrStdout(), cfg)
+		},
+	}
+	addRecordListFlags(recordListCmd, &cfg, &recordListStation)
+	recordCmd.AddCommand(recordListCmd)
+
+	recordTranscribeCmd := &cobra.Command{
+		Use:   "transcribe [recording-path-or-station]",
+		Short: "Transcribe a cached recording and keep versioned transcript output",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg.station = args[0]
+			markLanguageOverride(&cfg, cmd)
+			if err := validateRecordTranscribeConfig(cfg); err != nil {
+				return err
+			}
+			return runRecordTranscribe(cmd.OutOrStdout(), ctx, cfg, args[0])
+		},
+	}
+	addRecordTranscribeFlags(recordTranscribeCmd, &cfg)
+	recordCmd.AddCommand(recordTranscribeCmd)
+
+	rootCmd.AddCommand(previewCmd, benchmarkCmd, recordCmd)
 
 	return rootCmd
 }
@@ -427,6 +514,37 @@ func addBenchmarkFlags(cmd *cobra.Command, cfg *config) {
 	flags.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back words near the unstable end of each window for chunked mode")
 }
 
+func addRecordFlags(cmd *cobra.Command, cfg *config) {
+	flags := cmd.Flags()
+	flags.StringVarP(&cfg.station, "station", "s", cfg.station, "station alias or canonical name ("+stationHelp()+")")
+	flags.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL; overrides --station")
+	flags.StringVar(&cfg.cacheDir, "cache-dir", cfg.cacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.DurationVar(&cfg.recordSegment, "segment-duration", cfg.recordSegment, "recording chunk duration")
+	flags.DurationVar(&cfg.recordRestart, "restart-delay", cfg.recordRestart, "delay before restarting ffmpeg after stream failure")
+	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
+}
+
+func addRecordListFlags(cmd *cobra.Command, cfg *config, station *string) {
+	flags := cmd.Flags()
+	flags.StringVarP(station, "station", "s", "", "station alias or canonical name; omit to list all stations")
+	flags.StringVar(&cfg.cacheDir, "cache-dir", cfg.cacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+}
+
+func addRecordTranscribeFlags(cmd *cobra.Command, cfg *config) {
+	flags := cmd.Flags()
+	flags.StringVar(&cfg.cacheDir, "cache-dir", cfg.cacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.StringVar(&cfg.model, "model", cfg.model, "Whisper model")
+	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language; defaults to the recording station language when known")
+	flags.StringVar(&cfg.backend, "backend", cfg.backend, "transcription backend: auto, cpu, or mlx")
+	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
+	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
+	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
+	flags.StringVar(&cfg.pythonBin, "python-bin", cfg.pythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
+	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
+	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
+	flags.BoolVar(&cfg.transcribeForce, "force", cfg.transcribeForce, "recompute transcript even when a cached version exists")
+}
+
 func validateStreamConfig(cfg config) error {
 	if err := validateBackend(cfg.backend); err != nil {
 		return err
@@ -442,6 +560,350 @@ func validateStreamConfig(cfg config) error {
 	}
 	if cfg.monitorAudio {
 		if err := requireBinaries(cfg.ffplayBin); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRecordConfig(cfg config) error {
+	if cfg.recordSegment < time.Second {
+		return fmt.Errorf("--segment-duration must be at least 1s")
+	}
+	if cfg.recordRestart < time.Second {
+		return fmt.Errorf("--restart-delay must be at least 1s")
+	}
+	return requireBinaries(cfg.ffmpegBin)
+}
+
+func validateRecordTranscribeConfig(cfg config) error {
+	if err := validateBackend(cfg.backend); err != nil {
+		return err
+	}
+	if strings.TrimSpace(cfg.model) == "" {
+		return fmt.Errorf("--model must not be empty")
+	}
+	return nil
+}
+
+func runRecord(ctx context.Context, cfg config) error {
+	selectedStation, stationURL, err := applySelectedStationDefaults(&cfg)
+	if err != nil {
+		return err
+	}
+	streamURL, err := resolveStreamURL(ctx, stationURL)
+	if err != nil {
+		return err
+	}
+	cacheRoot, err := recordingCacheRoot(cfg)
+	if err != nil {
+		return err
+	}
+	stationSlug := recordingStationSlug(cfg, selectedStation)
+	pattern := recordingSegmentPattern(cacheRoot, stationSlug)
+	stationRoot := recordingStationRoot(cacheRoot, stationSlug)
+	if err := os.MkdirAll(stationRoot, 0o755); err != nil {
+		return err
+	}
+	stopDateDirs, err := startRecordingDateDirMaintainer(ctx, stationRoot)
+	if err != nil {
+		return err
+	}
+	defer stopDateDirs()
+
+	fmt.Fprintf(os.Stderr, "recording %s into %s\n", selectedStation, stationRoot)
+	fmt.Fprintf(os.Stderr, "chunks: %s, timestamps: UTC, stop with Ctrl+C\n", cfg.recordSegment)
+	status(cfg, "stream", "using "+streamURL)
+
+	attempt := 0
+	for {
+		started := time.Now()
+		err := runRecordFFmpeg(ctx, cfg, streamURL, pattern)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if time.Since(started) > time.Minute {
+			attempt = 0
+		} else {
+			attempt++
+		}
+		delay := recordRestartDelay(cfg.recordRestart, attempt)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ffmpeg stopped: %v\n", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "ffmpeg stopped without an error")
+		}
+		fmt.Fprintf(os.Stderr, "restarting in %s\n", delay)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+}
+
+func runRecordFFmpeg(ctx context.Context, cfg config, streamURL, pattern string) error {
+	seconds := int(cfg.recordSegment.Round(time.Second).Seconds())
+	if seconds < 1 {
+		seconds = 1
+	}
+	args := []string{
+		"-hide_banner", "-loglevel", "warning", "-nostdin",
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_at_eof", "1",
+		"-reconnect_on_network_error", "1",
+		"-reconnect_on_http_error", "5xx",
+		"-reconnect_delay_max", "30",
+		"-i", streamURL,
+		"-map", "0:a:0",
+		"-vn", "-sn", "-dn",
+		"-c:a", "copy",
+		"-f", "segment",
+		"-segment_time", strconv.Itoa(seconds),
+		"-segment_atclocktime", "1",
+		"-segment_format", "matroska",
+		"-reset_timestamps", "1",
+		"-strftime", "1",
+		pattern,
+	}
+	cmd := exec.Command(cfg.ffmpegBin, args...)
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	var stderr bytes.Buffer
+	cmd.Stderr = io.MultiWriter(&stderr, prefixedStderr(cfg, "ffmpeg"))
+	if cfg.verbose {
+		cmd.Stdout = os.Stderr
+	} else {
+		cmd.Stdout = io.Discard
+	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	err := waitForRecordFFmpeg(ctx, cmd)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return fmt.Errorf("%w: %s", err, oneLine(msg))
+		}
+		return err
+	}
+	return nil
+}
+
+func waitForRecordFFmpeg(ctx context.Context, cmd *exec.Cmd) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(os.Interrupt)
+		}
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			<-done
+		}
+		return ctx.Err()
+	}
+}
+
+func runRecordList(w io.Writer, cfg config) error {
+	cacheRoot, err := recordingCacheRoot(cfg)
+	if err != nil {
+		return err
+	}
+	recordings, err := listRecordings(cacheRoot, cfg.station)
+	if err != nil {
+		return err
+	}
+	return writeRecordings(w, recordings)
+}
+
+func runRecordTranscribe(w io.Writer, ctx context.Context, cfg config, target string) error {
+	cacheRoot, err := recordingCacheRoot(cfg)
+	if err != nil {
+		return err
+	}
+	rec, err := resolveRecordingTarget(cacheRoot, target)
+	if err != nil {
+		return err
+	}
+	applyRecordingLanguageDefaults(&cfg, rec)
+	requestedBackend := strings.ToLower(strings.TrimSpace(cfg.backend))
+	if requestedBackend != backendAuto {
+		outPath := recordingTranscriptPath(cacheRoot, rec, requestedBackend, cfg)
+		if !cfg.transcribeForce {
+			if _, err := os.Stat(outPath); err == nil {
+				return writeRecordingTranscriptSummary(w, "cached", outPath, requestedBackend, cfg)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	if err := ensureDirs(cfg); err != nil {
+		return err
+	}
+	backend, err := prepareBackend(ctx, &cfg)
+	if err != nil {
+		return err
+	}
+	outPath := recordingTranscriptPath(cacheRoot, rec, backend, cfg)
+	if !cfg.transcribeForce {
+		if _, err := os.Stat(outPath); err == nil {
+			return writeRecordingTranscriptSummary(w, "cached", outPath, backend, cfg)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	status(cfg, "recording", "transcribing "+rec.Path)
+	out, err := transcribe(ctx, cfg, cfg.model, rec.Path)
+	if err != nil {
+		return err
+	}
+	envelope := recordingTranscript{
+		Version:  transcriptCacheV1,
+		Created:  time.Now().UTC().Format(time.RFC3339Nano),
+		Backend:  backend,
+		Model:    cfg.model,
+		Language: cfg.language,
+		Record:   recordingTranscriptRecordingFrom(rec),
+		Whisper:  out,
+	}
+	if err := writeRecordingTranscript(outPath, envelope); err != nil {
+		return err
+	}
+	return writeRecordingTranscriptSummary(w, "transcribed", outPath, backend, cfg)
+}
+
+func resolveRecordingTarget(cacheRoot, target string) (recording, error) {
+	if strings.TrimSpace(target) == "" {
+		return recording{}, fmt.Errorf("recording path or station is required")
+	}
+	if info, err := os.Stat(target); err == nil && !info.IsDir() {
+		path, err := filepath.Abs(target)
+		if err != nil {
+			return recording{}, err
+		}
+		if rec, ok, err := recordingFromPath(filepath.Join(cacheRoot, "recordings"), path); err != nil {
+			return recording{}, err
+		} else if ok {
+			return rec, nil
+		}
+		return recording{
+			Station:  stationFromRecordingFilename(path),
+			Path:     path,
+			Bytes:    info.Size(),
+			StartUTC: recordingStartFromFilename(path),
+		}, nil
+	}
+	recordings, err := listRecordings(cacheRoot, target)
+	if err != nil {
+		return recording{}, err
+	}
+	if len(recordings) == 0 {
+		return recording{}, fmt.Errorf("no recordings found for %q", target)
+	}
+	return recordings[len(recordings)-1], nil
+}
+
+func applyRecordingLanguageDefaults(cfg *config, rec recording) {
+	if cfg.languageSet {
+		return
+	}
+	if selected, err := lookupStation(rec.Station); err == nil && selected.Language != "" {
+		cfg.language = selected.Language
+	}
+}
+
+func recordingTranscriptRecordingFrom(rec recording) recordingTranscriptRecording {
+	out := recordingTranscriptRecording{
+		Station: rec.Station,
+		Path:    rec.Path,
+		Bytes:   rec.Bytes,
+	}
+	if !rec.StartUTC.IsZero() {
+		out.StartUTC = rec.StartUTC.Format(time.RFC3339)
+	}
+	return out
+}
+
+func writeRecordingTranscript(path string, transcript recordingTranscript) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(transcript, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func writeRecordingTranscriptSummary(w io.Writer, statusText, path, backend string, cfg config) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "STATUS\tVERSION\tBACKEND\tMODEL\tLANGUAGE\tPATH"); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", statusText, transcriptCacheV1, backend, cfg.model, cfg.language, path); err != nil {
+		return err
+	}
+	return tw.Flush()
+}
+
+func recordRestartDelay(base time.Duration, attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := base
+	for i := 1; i < attempt && delay < time.Minute; i++ {
+		delay *= 2
+	}
+	if delay > time.Minute {
+		return time.Minute
+	}
+	return delay
+}
+
+func startRecordingDateDirMaintainer(ctx context.Context, stationRoot string) (func(), error) {
+	if err := ensureRecordingDateDirs(stationRoot, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-ticker.C:
+				_ = ensureRecordingDateDirs(stationRoot, now.UTC())
+			}
+		}
+	}()
+	return cancel, nil
+}
+
+func ensureRecordingDateDirs(stationRoot string, now time.Time) error {
+	day := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
+	for offset := 0; offset <= 2; offset++ {
+		t := day.AddDate(0, 0, offset)
+		dir := filepath.Join(stationRoot, t.Format("2006"), t.Format("01"), t.Format("02"))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
@@ -1811,6 +2273,227 @@ func stationKey(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func stationSlug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	replacer := strings.NewReplacer(
+		"ą", "a",
+		"ć", "c",
+		"ę", "e",
+		"ł", "l",
+		"ń", "n",
+		"ó", "o",
+		"ś", "s",
+		"ż", "z",
+		"ź", "z",
+	)
+	s = replacer.Replace(s)
+	var b strings.Builder
+	sep := false
+	for _, r := range s {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			if sep && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			b.WriteRune(r)
+			sep = false
+		default:
+			sep = true
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "custom-stream"
+	}
+	return out
+}
+
+func recordingStationSlug(cfg config, selectedName string) string {
+	if cfg.streamURL == "" {
+		if selected, err := lookupStation(cfg.station); err == nil && len(selected.Aliases) > 0 {
+			return stationSlug(selected.Aliases[0])
+		}
+	}
+	return stationSlug(selectedName)
+}
+
+func recordingCacheRoot(cfg config) (string, error) {
+	if cfg.cacheDir != "" {
+		return cfg.cacheDir, nil
+	}
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "tr1"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".cache", "tr1"), nil
+}
+
+func recordingStationRoot(cacheRoot, stationSlug string) string {
+	return filepath.Join(cacheRoot, "recordings", stationSlug)
+}
+
+func recordingSegmentPattern(cacheRoot, stationSlug string) string {
+	return filepath.Join(recordingStationRoot(cacheRoot, stationSlug), "%Y", "%m", "%d", stationSlug+"_%Y%m%dT%H%M%SZ"+defaultRecordExt)
+}
+
+func recordingTranscriptPath(cacheRoot string, rec recording, backend string, cfg config) string {
+	start := rec.StartUTC.UTC()
+	year, month, day := "unknown", "unknown", "unknown"
+	if !start.IsZero() {
+		year = start.Format("2006")
+		month = start.Format("01")
+		day = start.Format("02")
+	}
+	recordingName := strings.TrimSuffix(filepath.Base(rec.Path), filepath.Ext(rec.Path))
+	if recordingName == "" {
+		recordingName = "recording"
+	}
+	return filepath.Join(
+		cacheRoot,
+		"transcripts",
+		transcriptCacheV1,
+		stationSlug(rec.Station),
+		year,
+		month,
+		day,
+		stationSlug(recordingName),
+		stationSlug(backend),
+		stationSlug(cfg.model),
+		stationSlug(cfg.language)+".json",
+	)
+}
+
+func listRecordings(cacheRoot, stationQuery string) ([]recording, error) {
+	root := filepath.Join(cacheRoot, "recordings")
+	var stationFilter string
+	if strings.TrimSpace(stationQuery) != "" {
+		selected, err := lookupStation(stationQuery)
+		if err != nil {
+			return nil, err
+		}
+		stationFilter = stationSlug(selected.Aliases[0])
+	}
+
+	var out []recording
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			if stationFilter != "" && path == root {
+				return nil
+			}
+			if stationFilter != "" {
+				rel, err := filepath.Rel(root, path)
+				if err != nil {
+					return err
+				}
+				if rel != "." {
+					parts := strings.Split(rel, string(filepath.Separator))
+					if len(parts) > 0 && parts[0] != stationFilter {
+						return filepath.SkipDir
+					}
+				}
+			}
+			return nil
+		}
+		rec, ok, err := recordingFromPath(root, path)
+		if err != nil || !ok {
+			return err
+		}
+		if stationFilter != "" && rec.Station != stationFilter {
+			return nil
+		}
+		out = append(out, rec)
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Station != out[j].Station {
+			return out[i].Station < out[j].Station
+		}
+		return out[i].StartUTC.Before(out[j].StartUTC)
+	})
+	return out, nil
+}
+
+func stationFromRecordingFilename(path string) string {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if station, _, ok := strings.Cut(base, "_"); ok && station != "" {
+		return stationSlug(station)
+	}
+	return "external"
+}
+
+func recordingStartFromFilename(path string) time.Time {
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if _, timestamp, ok := strings.Cut(base, "_"); ok {
+		if start, err := time.Parse("20060102T150405Z", timestamp); err == nil {
+			return start
+		}
+	}
+	return time.Time{}
+}
+
+func recordingFromPath(root, path string) (recording, bool, error) {
+	if filepath.Ext(path) != defaultRecordExt {
+		return recording{}, false, nil
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return recording{}, false, err
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) < 5 {
+		return recording{}, false, nil
+	}
+	station := parts[0]
+	base := filepath.Base(path)
+	prefix := station + "_"
+	if !strings.HasPrefix(base, prefix) || !strings.HasSuffix(base, defaultRecordExt) {
+		return recording{}, false, nil
+	}
+	timestamp := strings.TrimSuffix(strings.TrimPrefix(base, prefix), defaultRecordExt)
+	start, err := time.Parse("20060102T150405Z", timestamp)
+	if err != nil {
+		return recording{}, false, nil
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return recording{}, false, err
+	}
+	if info.Size() == 0 {
+		return recording{}, false, nil
+	}
+	return recording{
+		Station:  station,
+		StartUTC: start,
+		Path:     path,
+		Bytes:    info.Size(),
+	}, true, nil
+}
+
+func writeRecordings(w io.Writer, recordings []recording) error {
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	if _, err := fmt.Fprintln(tw, "START_UTC\tSTATION\tBYTES\tPATH"); err != nil {
+		return err
+	}
+	for _, rec := range recordings {
+		if _, err := fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", rec.StartUTC.Format(time.RFC3339), rec.Station, rec.Bytes, rec.Path); err != nil {
+			return err
+		}
+	}
+	return tw.Flush()
 }
 
 func resolveStreamURL(ctx context.Context, rawURL string) (string, error) {
