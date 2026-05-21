@@ -79,6 +79,15 @@ go run ./cmd/tr1-lab record transcribe bbc --model tiny
 go run ./cmd/tr1-lab record transcribe ~/.cache/tr1/recordings/tokfm/2026/05/18/tokfm_20260518T120000Z.mka
 ```
 
+Fetch the TOK FM programme schedule from the official ramówka page:
+
+```sh
+go run ./cmd/tr1-lab programmes tokfm
+go run ./cmd/tr1-lab programmes tokfm --format json
+```
+
+Fetched entries are cached idempotently in SQLite at `$TR1_CACHE_DIR/programmes/programmes.sqlite` when `TR1_CACHE_DIR` is set, otherwise under the default tr1 cache root. Existing programme entries are skipped on later fetches.
+
 Recordings are written under the tr1 cache root: `$XDG_CACHE_HOME/tr1` when `XDG_CACHE_HOME` is set, otherwise `~/.cache/tr1` including on macOS. Files are grouped by station and UTC date:
 
 ```text

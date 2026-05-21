@@ -26,8 +26,6 @@ import (
 	"time"
 	"unicode"
 	"unsafe"
-
-	"github.com/spf13/cobra"
 )
 
 const (
@@ -65,7 +63,7 @@ var benchmarkFixtures = []benchmarkFixture{
 	},
 }
 
-type station struct {
+type Station struct {
 	Name     string
 	URL      string
 	Language string
@@ -96,7 +94,7 @@ type recordingTranscriptRecording struct {
 	Bytes    int64  `json:"bytes,omitempty"`
 }
 
-var stations = []station{
+var stations = []Station{
 	{
 		Name:     "TokFM",
 		URL:      "http://www.tuba.fm/stream.pls?radio=10&mp3=1",
@@ -144,37 +142,37 @@ var stations = []station{
 //go:embed mlx.pyproject.toml
 var embeddedPyproject string
 
-type config struct {
-	station         string
-	streamURL       string
-	model           string
-	models          string
-	language        string
-	languageSet     bool
-	backend         string
-	chunkSeconds    int
-	stepSeconds     int
-	holdback        time.Duration
-	workDir         string
-	whisperBin      string
-	uvBin           string
-	pythonBin       string
-	ffmpegBin       string
-	ffplayBin       string
-	cacheDir        string
-	sagBin          string
-	sagVoice        string
-	fixture         string
-	wordDelay       time.Duration
-	recordSegment   time.Duration
-	recordRestart   time.Duration
-	transcribeForce bool
-	spinner         bool
-	previewOut      string
-	benchmarkMode   string
-	initialPrompt   string
-	monitorAudio    bool
-	verbose         bool
+type Config struct {
+	Station         string
+	StreamURL       string
+	Model           string
+	Models          string
+	Language        string
+	LanguageSet     bool
+	Backend         string
+	ChunkSeconds    int
+	StepSeconds     int
+	Holdback        time.Duration
+	WorkDir         string
+	WhisperBin      string
+	UVBin           string
+	PythonBin       string
+	FFmpegBin       string
+	FFplayBin       string
+	CacheDir        string
+	SagBin          string
+	SagVoice        string
+	Fixture         string
+	WordDelay       time.Duration
+	RecordSegment   time.Duration
+	RecordRestart   time.Duration
+	TranscribeForce bool
+	Spinner         bool
+	PreviewOut      string
+	BenchmarkMode   string
+	InitialPrompt   string
+	MonitorAudio    bool
+	Verbose         bool
 }
 
 type whisperOutput struct {
@@ -222,204 +220,107 @@ type benchResult struct {
 	Text     string
 }
 
-func defaultConfig() config {
-	return config{
-		station:       getenv("TR1_STATION", defaultStationAlias),
-		streamURL:     getenv("TR1_STREAM_URL", ""),
-		model:         getenv("TR1_MODEL", "medium"),
-		models:        getenv("TR1_MODELS", "tiny,base"),
-		language:      getenv("TR1_LANGUAGE", "Polish"),
-		languageSet:   envHasValue("TR1_LANGUAGE"),
-		backend:       getenv("TR1_BACKEND", backendAuto),
-		chunkSeconds:  intFromEnv("TR1_CHUNK_SECONDS", 24),
-		stepSeconds:   intFromEnv("TR1_STEP_SECONDS", 12),
-		holdback:      durationFromEnv("TR1_HOLDBACK", time.Second),
-		workDir:       getenv("TR1_WORKDIR", defaultWorkDir),
-		whisperBin:    getenv("TR1_WHISPER_BIN", "whisper"),
-		uvBin:         getenv("TR1_UV_BIN", "uv"),
-		pythonBin:     getenv("TR1_PYTHON_BIN", ""),
-		ffmpegBin:     getenv("TR1_FFMPEG_BIN", "ffmpeg"),
-		ffplayBin:     getenv("TR1_FFPLAY_BIN", "ffplay"),
-		cacheDir:      getenv("TR1_CACHE_DIR", ""),
-		sagBin:        getenv("TR1_SAG_BIN", "sag"),
-		sagVoice:      getenv("TR1_SAG_VOICE", ""),
-		fixture:       getenv("TR1_FIXTURE", defaultFixtureName),
-		wordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
-		recordSegment: durationFromEnv("TR1_RECORD_SEGMENT_DURATION", defaultRecordSegmentDuration),
-		recordRestart: durationFromEnv("TR1_RECORD_RESTART_DELAY", 5*time.Second),
-		spinner:       boolFromEnv("TR1_SPINNER", true),
-		previewOut:    "",
-		benchmarkMode: getenv("TR1_BENCHMARK_MODE", benchmarkModeWhole),
-		initialPrompt: "Polski serwis informacyjny radiowy. Poprawna polska interpunkcja i nazwy własne.",
-		monitorAudio:  boolFromEnv("TR1_PLAY", false),
-		verbose:       boolFromEnv("TR1_VERBOSE", false),
+func defaultConfig() Config {
+	return Config{
+		Station:       getenv("TR1_STATION", defaultStationAlias),
+		StreamURL:     getenv("TR1_STREAM_URL", ""),
+		Model:         getenv("TR1_MODEL", "medium"),
+		Models:        getenv("TR1_MODELS", "tiny,base"),
+		Language:      getenv("TR1_LANGUAGE", "Polish"),
+		LanguageSet:   envHasValue("TR1_LANGUAGE"),
+		Backend:       getenv("TR1_BACKEND", backendAuto),
+		ChunkSeconds:  intFromEnv("TR1_CHUNK_SECONDS", 24),
+		StepSeconds:   intFromEnv("TR1_STEP_SECONDS", 12),
+		Holdback:      durationFromEnv("TR1_HOLDBACK", time.Second),
+		WorkDir:       getenv("TR1_WORKDIR", defaultWorkDir),
+		WhisperBin:    getenv("TR1_WHISPER_BIN", "whisper"),
+		UVBin:         getenv("TR1_UV_BIN", "uv"),
+		PythonBin:     getenv("TR1_PYTHON_BIN", ""),
+		FFmpegBin:     getenv("TR1_FFMPEG_BIN", "ffmpeg"),
+		FFplayBin:     getenv("TR1_FFPLAY_BIN", "ffplay"),
+		CacheDir:      getenv("TR1_CACHE_DIR", ""),
+		SagBin:        getenv("TR1_SAG_BIN", "sag"),
+		SagVoice:      getenv("TR1_SAG_VOICE", ""),
+		Fixture:       getenv("TR1_FIXTURE", defaultFixtureName),
+		WordDelay:     durationFromEnv("TR1_WORD_DELAY", 35*time.Millisecond),
+		RecordSegment: durationFromEnv("TR1_RECORD_SEGMENT_DURATION", defaultRecordSegmentDuration),
+		RecordRestart: durationFromEnv("TR1_RECORD_RESTART_DELAY", 5*time.Second),
+		Spinner:       boolFromEnv("TR1_SPINNER", true),
+		PreviewOut:    "",
+		BenchmarkMode: getenv("TR1_BENCHMARK_MODE", benchmarkModeWhole),
+		InitialPrompt: "Polski serwis informacyjny radiowy. Poprawna polska interpunkcja i nazwy własne.",
+		MonitorAudio:  boolFromEnv("TR1_PLAY", false),
+		Verbose:       boolFromEnv("TR1_VERBOSE", false),
 	}
 }
 
-func NewRootCommand(ctx context.Context) *cobra.Command {
-	cfg := defaultConfig()
-
-	rootCmd := &cobra.Command{
-		Use:           "tr1 [station]",
-		Short:         "Terminal radio receiver and Whisper transcription loop",
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := applyStationArg(&cfg, args); err != nil {
-				return err
-			}
-			markLanguageOverride(&cfg, cmd)
-			if err := validateStreamConfig(cfg); err != nil {
-				return err
-			}
-			return runStream(ctx, cfg)
-		},
-	}
-
-	rootCmd.PersistentFlags().BoolVar(&cfg.verbose, "verbose", cfg.verbose, "print diagnostic status messages to stderr")
-	addStreamFlags(rootCmd, &cfg)
-
-	command := func(validate func(config) error, run func(context.Context, config) error) func(*cobra.Command, []string) error {
-		return func(cmd *cobra.Command, args []string) error {
-			markLanguageOverride(&cfg, cmd)
-			if validate == nil {
-				return run(ctx, cfg)
-			}
-			if err := validate(cfg); err != nil {
-				return err
-			}
-			return run(ctx, cfg)
-		}
-	}
-
-	streamCmd := &cobra.Command{
-		Use:   "stream [station]",
-		Short: "Stream radio audio and print live Whisper transcription",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := applyStationArg(&cfg, args); err != nil {
-				return err
-			}
-			markLanguageOverride(&cfg, cmd)
-			return command(validateStreamConfig, runStream)(cmd, nil)
-		},
-	}
-	addStreamFlags(streamCmd, &cfg)
-
-	stationCmds := stationAliasCommands(&cfg, command(validateStreamConfig, runStream))
-
-	stationsCmd := &cobra.Command{
-		Use:   "stations",
-		Short: "List available radio stations",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return writeStations(cmd.OutOrStdout())
-		},
-	}
-
-	rootCmd.AddCommand(
-		streamCmd,
-		stationsCmd,
-	)
-	rootCmd.AddCommand(stationCmds...)
-
-	return rootCmd
+func DefaultConfig() Config {
+	return defaultConfig()
 }
 
-func NewLabCommand(ctx context.Context) *cobra.Command {
-	cfg := defaultConfig()
-
-	rootCmd := &cobra.Command{
-		Use:           "tr1-lab",
-		Short:         "Developer tools for tr1 fixtures and benchmarks",
-		SilenceErrors: true,
-		SilenceUsage:  true,
+func Stations() []Station {
+	out := make([]Station, len(stations))
+	for i, s := range stations {
+		out[i] = s
+		out[i].Aliases = append([]string(nil), s.Aliases...)
 	}
+	return out
+}
 
-	rootCmd.PersistentFlags().BoolVar(&cfg.verbose, "verbose", cfg.verbose, "print diagnostic status messages to stderr")
+func LookupStation(query string) (Station, error) {
+	return lookupStation(query)
+}
 
-	command := func(validate func(config) error, run func(context.Context, config) error) func(*cobra.Command, []string) error {
-		return func(cmd *cobra.Command, args []string) error {
-			if validate == nil {
-				return run(ctx, cfg)
-			}
-			if err := validate(cfg); err != nil {
-				return err
-			}
-			return run(ctx, cfg)
-		}
-	}
+func StationHelp() string {
+	return stationHelp()
+}
 
-	previewCmd := &cobra.Command{
-		Use:   "preview",
-		Short: "Generate synthetic news-broadcast preview audio with sag",
-		Args:  cobra.NoArgs,
-		RunE:  command(nil, runPreview),
-	}
-	addPreviewFlags(previewCmd, &cfg)
+func FixtureHelp() string {
+	return fixtureHelp()
+}
 
-	benchmarkCmd := &cobra.Command{
-		Use:   "benchmark",
-		Short: "Benchmark Whisper models against the generated preview audio",
-		Args:  cobra.NoArgs,
-		RunE:  command(nil, runBenchmark),
-	}
-	addBenchmarkFlags(benchmarkCmd, &cfg)
+func WriteStations(w io.Writer) error {
+	return writeStations(w)
+}
 
-	recordCmd := &cobra.Command{
-		Use:   "record [station]",
-		Short: "Record internet radio broadcasts into the tr1 cache",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := applyStationArg(&cfg, args); err != nil {
-				return err
-			}
-			if err := validateRecordConfig(cfg); err != nil {
-				return err
-			}
-			return runRecord(ctx, cfg)
-		},
-	}
-	addRecordFlags(recordCmd, &cfg)
+func ValidateStreamConfig(cfg Config) error {
+	return validateStreamConfig(cfg)
+}
 
-	recordListStation := ""
-	recordListCmd := &cobra.Command{
-		Use:   "list [station]",
-		Short: "List cached broadcast recordings",
-		Args:  cobra.MaximumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) > 0 {
-				cfg.station = args[0]
-			} else if !cmd.Flags().Changed("station") {
-				cfg.station = ""
-			} else {
-				cfg.station = recordListStation
-			}
-			return runRecordList(cmd.OutOrStdout(), cfg)
-		},
-	}
-	addRecordListFlags(recordListCmd, &cfg, &recordListStation)
-	recordCmd.AddCommand(recordListCmd)
+func ValidateRecordConfig(cfg Config) error {
+	return validateRecordConfig(cfg)
+}
 
-	recordTranscribeCmd := &cobra.Command{
-		Use:   "transcribe [recording-path-or-station]",
-		Short: "Transcribe a cached recording and keep versioned transcript output",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg.station = args[0]
-			markLanguageOverride(&cfg, cmd)
-			if err := validateRecordTranscribeConfig(cfg); err != nil {
-				return err
-			}
-			return runRecordTranscribe(cmd.OutOrStdout(), ctx, cfg, args[0])
-		},
-	}
-	addRecordTranscribeFlags(recordTranscribeCmd, &cfg)
-	recordCmd.AddCommand(recordTranscribeCmd)
+func ValidateRecordTranscribeConfig(cfg Config) error {
+	return validateRecordTranscribeConfig(cfg)
+}
 
-	rootCmd.AddCommand(previewCmd, benchmarkCmd, recordCmd)
+func RunStream(ctx context.Context, cfg Config) error {
+	return runStream(ctx, cfg)
+}
 
-	return rootCmd
+func RunPreview(ctx context.Context, cfg Config) error {
+	return runPreview(ctx, cfg)
+}
+
+func RunBenchmark(ctx context.Context, cfg Config) error {
+	return runBenchmark(ctx, cfg)
+}
+
+func RunRecord(ctx context.Context, cfg Config) error {
+	return runRecord(ctx, cfg)
+}
+
+func RunRecordList(w io.Writer, cfg Config) error {
+	return runRecordList(w, cfg)
+}
+
+func RunRecordTranscribe(w io.Writer, ctx context.Context, cfg Config, target string) error {
+	return runRecordTranscribe(w, ctx, cfg, target)
+}
+
+func CacheRoot(cacheDir string) (string, error) {
+	return recordingCacheRoot(Config{CacheDir: cacheDir})
 }
 
 func writeStations(w io.Writer) error {
@@ -439,154 +340,48 @@ func writeStations(w io.Writer) error {
 	return tw.Flush()
 }
 
-func stationAliasCommands(cfg *config, run func(*cobra.Command, []string) error) []*cobra.Command {
-	seen := map[string]bool{}
-	var out []*cobra.Command
-	for _, s := range stations {
-		for _, alias := range s.Aliases {
-			if alias == "" || seen[alias] {
-				continue
-			}
-			seen[alias] = true
-			alias := alias
-			cmd := &cobra.Command{
-				Use:    alias,
-				Hidden: true,
-				Args:   cobra.NoArgs,
-				RunE: func(cmd *cobra.Command, args []string) error {
-					if !cmd.Flags().Changed("station") {
-						cfg.station = alias
-					}
-					return run(cmd, args)
-				},
-			}
-			addStreamFlags(cmd, cfg)
-			out = append(out, cmd)
-		}
-	}
-	return out
-}
-
-func addStreamFlags(cmd *cobra.Command, cfg *config) {
-	flags := cmd.Flags()
-	flags.StringVarP(&cfg.station, "station", "s", cfg.station, "station alias or canonical name ("+stationHelp()+")")
-	flags.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL; overrides --station")
-	flags.StringVar(&cfg.model, "model", cfg.model, "Whisper model")
-	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
-	flags.StringVar(&cfg.backend, "backend", cfg.backend, "transcription backend: auto, cpu, or mlx")
-	flags.IntVar(&cfg.chunkSeconds, "window", cfg.chunkSeconds, "rolling transcription window in seconds")
-	flags.IntVar(&cfg.stepSeconds, "step", cfg.stepSeconds, "seconds of new audio between Whisper requests")
-	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
-	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
-	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
-	flags.StringVar(&cfg.pythonBin, "python-bin", cfg.pythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
-	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
-	flags.StringVar(&cfg.ffplayBin, "ffplay-bin", cfg.ffplayBin, "ffplay executable used by --play")
-	flags.BoolVar(&cfg.monitorAudio, "play", cfg.monitorAudio, "play live stream audio through the system audio output while transcribing")
-	flags.DurationVar(&cfg.wordDelay, "word-delay", cfg.wordDelay, "delay between printed words")
-	flags.BoolVar(&cfg.spinner, "spinner", cfg.spinner, "show an interactive waiting spinner between transcription updates")
-	flags.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back live words near the unstable end of each window")
-	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
-}
-
-func addPreviewFlags(cmd *cobra.Command, cfg *config) {
-	flags := cmd.Flags()
-	flags.StringVar(&cfg.fixture, "fixture", cfg.fixture, "benchmark fixture name ("+fixtureHelp()+")")
-	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for ElevenLabs preview audio")
-	flags.StringVar(&cfg.sagBin, "sag-bin", cfg.sagBin, "sag executable")
-	flags.StringVar(&cfg.sagVoice, "voice", cfg.sagVoice, "sag/ElevenLabs voice name or ID")
-}
-
-func addBenchmarkFlags(cmd *cobra.Command, cfg *config) {
-	flags := cmd.Flags()
-	flags.StringVar(&cfg.fixture, "fixture", cfg.fixture, "benchmark fixture name ("+fixtureHelp()+")")
-	flags.StringVar(&cfg.models, "models", cfg.models, "comma-separated Whisper models")
-	flags.StringVar(&cfg.previewOut, "preview-out", cfg.previewOut, "path for benchmark preview audio")
-	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
-	flags.StringVar(&cfg.backend, "backend", cfg.backend, "transcription backend: auto, cpu, or mlx")
-	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
-	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
-	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language")
-	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
-	flags.StringVar(&cfg.benchmarkMode, "mode", cfg.benchmarkMode, "benchmark mode: whole or chunked")
-	flags.IntVar(&cfg.chunkSeconds, "window", cfg.chunkSeconds, "rolling transcription window in seconds for chunked mode")
-	flags.IntVar(&cfg.stepSeconds, "step", cfg.stepSeconds, "seconds of new audio between Whisper requests for chunked mode")
-	flags.DurationVar(&cfg.holdback, "holdback", cfg.holdback, "hold back words near the unstable end of each window for chunked mode")
-}
-
-func addRecordFlags(cmd *cobra.Command, cfg *config) {
-	flags := cmd.Flags()
-	flags.StringVarP(&cfg.station, "station", "s", cfg.station, "station alias or canonical name ("+stationHelp()+")")
-	flags.StringVar(&cfg.streamURL, "stream-url", cfg.streamURL, "radio stream or playlist URL; overrides --station")
-	flags.StringVar(&cfg.cacheDir, "cache-dir", cfg.cacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
-	flags.DurationVar(&cfg.recordSegment, "segment-duration", cfg.recordSegment, "recording chunk duration")
-	flags.DurationVar(&cfg.recordRestart, "restart-delay", cfg.recordRestart, "delay before restarting ffmpeg after stream failure")
-	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
-}
-
-func addRecordListFlags(cmd *cobra.Command, cfg *config, station *string) {
-	flags := cmd.Flags()
-	flags.StringVarP(station, "station", "s", "", "station alias or canonical name; omit to list all stations")
-	flags.StringVar(&cfg.cacheDir, "cache-dir", cfg.cacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
-}
-
-func addRecordTranscribeFlags(cmd *cobra.Command, cfg *config) {
-	flags := cmd.Flags()
-	flags.StringVar(&cfg.cacheDir, "cache-dir", cfg.cacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
-	flags.StringVar(&cfg.model, "model", cfg.model, "Whisper model")
-	flags.StringVar(&cfg.language, "language", cfg.language, "Whisper language; defaults to the recording station language when known")
-	flags.StringVar(&cfg.backend, "backend", cfg.backend, "transcription backend: auto, cpu, or mlx")
-	flags.StringVar(&cfg.workDir, "workdir", cfg.workDir, "runtime working directory")
-	flags.StringVar(&cfg.whisperBin, "whisper-bin", cfg.whisperBin, "whisper executable")
-	flags.StringVar(&cfg.uvBin, "uv-bin", cfg.uvBin, "uv executable used to provision the MLX Python runtime")
-	flags.StringVar(&cfg.pythonBin, "python-bin", cfg.pythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
-	flags.StringVar(&cfg.ffmpegBin, "ffmpeg-bin", cfg.ffmpegBin, "ffmpeg executable")
-	flags.StringVar(&cfg.initialPrompt, "initial-prompt", cfg.initialPrompt, "Whisper initial prompt")
-	flags.BoolVar(&cfg.transcribeForce, "force", cfg.transcribeForce, "recompute transcript even when a cached version exists")
-}
-
-func validateStreamConfig(cfg config) error {
-	if err := validateBackend(cfg.backend); err != nil {
+func validateStreamConfig(cfg Config) error {
+	if err := validateBackend(cfg.Backend); err != nil {
 		return err
 	}
-	if cfg.chunkSeconds < 3 {
+	if cfg.ChunkSeconds < 3 {
 		return fmt.Errorf("--window must be at least 3 seconds")
 	}
-	if cfg.stepSeconds < 1 {
+	if cfg.StepSeconds < 1 {
 		return fmt.Errorf("--step must be at least 1 second")
 	}
-	if cfg.stepSeconds > cfg.chunkSeconds {
+	if cfg.StepSeconds > cfg.ChunkSeconds {
 		return fmt.Errorf("--step must be less than or equal to --window")
 	}
-	if cfg.monitorAudio {
-		if err := requireBinaries(cfg.ffplayBin); err != nil {
+	if cfg.MonitorAudio {
+		if err := requireBinaries(cfg.FFplayBin); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateRecordConfig(cfg config) error {
-	if cfg.recordSegment < time.Second {
+func validateRecordConfig(cfg Config) error {
+	if cfg.RecordSegment < time.Second {
 		return fmt.Errorf("--segment-duration must be at least 1s")
 	}
-	if cfg.recordRestart < time.Second {
+	if cfg.RecordRestart < time.Second {
 		return fmt.Errorf("--restart-delay must be at least 1s")
 	}
-	return requireBinaries(cfg.ffmpegBin)
+	return requireBinaries(cfg.FFmpegBin)
 }
 
-func validateRecordTranscribeConfig(cfg config) error {
-	if err := validateBackend(cfg.backend); err != nil {
+func validateRecordTranscribeConfig(cfg Config) error {
+	if err := validateBackend(cfg.Backend); err != nil {
 		return err
 	}
-	if strings.TrimSpace(cfg.model) == "" {
+	if strings.TrimSpace(cfg.Model) == "" {
 		return fmt.Errorf("--model must not be empty")
 	}
 	return nil
 }
 
-func runRecord(ctx context.Context, cfg config) error {
+func runRecord(ctx context.Context, cfg Config) error {
 	selectedStation, stationURL, err := applySelectedStationDefaults(&cfg)
 	if err != nil {
 		return err
@@ -612,7 +407,7 @@ func runRecord(ctx context.Context, cfg config) error {
 	defer stopDateDirs()
 
 	fmt.Fprintf(os.Stderr, "recording %s into %s\n", selectedStation, stationRoot)
-	fmt.Fprintf(os.Stderr, "chunks: %s, timestamps: UTC, stop with Ctrl+C\n", cfg.recordSegment)
+	fmt.Fprintf(os.Stderr, "chunks: %s, timestamps: UTC, stop with Ctrl+C\n", cfg.RecordSegment)
 	status(cfg, "stream", "using "+streamURL)
 
 	attempt := 0
@@ -627,7 +422,7 @@ func runRecord(ctx context.Context, cfg config) error {
 		} else {
 			attempt++
 		}
-		delay := recordRestartDelay(cfg.recordRestart, attempt)
+		delay := recordRestartDelay(cfg.RecordRestart, attempt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ffmpeg stopped: %v\n", err)
 		} else {
@@ -642,8 +437,8 @@ func runRecord(ctx context.Context, cfg config) error {
 	}
 }
 
-func runRecordFFmpeg(ctx context.Context, cfg config, streamURL, pattern string) error {
-	seconds := int(cfg.recordSegment.Round(time.Second).Seconds())
+func runRecordFFmpeg(ctx context.Context, cfg Config, streamURL, pattern string) error {
+	seconds := int(cfg.RecordSegment.Round(time.Second).Seconds())
 	if seconds < 1 {
 		seconds = 1
 	}
@@ -667,11 +462,11 @@ func runRecordFFmpeg(ctx context.Context, cfg config, streamURL, pattern string)
 		"-strftime", "1",
 		pattern,
 	}
-	cmd := exec.Command(cfg.ffmpegBin, args...)
+	cmd := exec.Command(cfg.FFmpegBin, args...)
 	cmd.Env = append(os.Environ(), "TZ=UTC")
 	var stderr bytes.Buffer
 	cmd.Stderr = io.MultiWriter(&stderr, prefixedStderr(cfg, "ffmpeg"))
-	if cfg.verbose {
+	if cfg.Verbose {
 		cmd.Stdout = os.Stderr
 	} else {
 		cmd.Stdout = io.Discard
@@ -717,19 +512,19 @@ func waitForRecordFFmpeg(ctx context.Context, cmd *exec.Cmd) error {
 	}
 }
 
-func runRecordList(w io.Writer, cfg config) error {
+func runRecordList(w io.Writer, cfg Config) error {
 	cacheRoot, err := recordingCacheRoot(cfg)
 	if err != nil {
 		return err
 	}
-	recordings, err := listRecordings(cacheRoot, cfg.station)
+	recordings, err := listRecordings(cacheRoot, cfg.Station)
 	if err != nil {
 		return err
 	}
 	return writeRecordings(w, recordings)
 }
 
-func runRecordTranscribe(w io.Writer, ctx context.Context, cfg config, target string) error {
+func runRecordTranscribe(w io.Writer, ctx context.Context, cfg Config, target string) error {
 	cacheRoot, err := recordingCacheRoot(cfg)
 	if err != nil {
 		return err
@@ -739,10 +534,10 @@ func runRecordTranscribe(w io.Writer, ctx context.Context, cfg config, target st
 		return err
 	}
 	applyRecordingLanguageDefaults(&cfg, rec)
-	requestedBackend := strings.ToLower(strings.TrimSpace(cfg.backend))
+	requestedBackend := strings.ToLower(strings.TrimSpace(cfg.Backend))
 	if requestedBackend != backendAuto {
 		outPath := recordingTranscriptPath(cacheRoot, rec, requestedBackend, cfg)
-		if !cfg.transcribeForce {
+		if !cfg.TranscribeForce {
 			if _, err := os.Stat(outPath); err == nil {
 				return writeRecordingTranscriptSummary(w, "cached", outPath, requestedBackend, cfg)
 			} else if !errors.Is(err, os.ErrNotExist) {
@@ -758,7 +553,7 @@ func runRecordTranscribe(w io.Writer, ctx context.Context, cfg config, target st
 		return err
 	}
 	outPath := recordingTranscriptPath(cacheRoot, rec, backend, cfg)
-	if !cfg.transcribeForce {
+	if !cfg.TranscribeForce {
 		if _, err := os.Stat(outPath); err == nil {
 			return writeRecordingTranscriptSummary(w, "cached", outPath, backend, cfg)
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -766,7 +561,7 @@ func runRecordTranscribe(w io.Writer, ctx context.Context, cfg config, target st
 		}
 	}
 	status(cfg, "recording", "transcribing "+rec.Path)
-	out, err := transcribe(ctx, cfg, cfg.model, rec.Path)
+	out, err := transcribe(ctx, cfg, cfg.Model, rec.Path)
 	if err != nil {
 		return err
 	}
@@ -774,8 +569,8 @@ func runRecordTranscribe(w io.Writer, ctx context.Context, cfg config, target st
 		Version:  transcriptCacheV1,
 		Created:  time.Now().UTC().Format(time.RFC3339Nano),
 		Backend:  backend,
-		Model:    cfg.model,
-		Language: cfg.language,
+		Model:    cfg.Model,
+		Language: cfg.Language,
 		Record:   recordingTranscriptRecordingFrom(rec),
 		Whisper:  out,
 	}
@@ -816,12 +611,12 @@ func resolveRecordingTarget(cacheRoot, target string) (recording, error) {
 	return recordings[len(recordings)-1], nil
 }
 
-func applyRecordingLanguageDefaults(cfg *config, rec recording) {
-	if cfg.languageSet {
+func applyRecordingLanguageDefaults(cfg *Config, rec recording) {
+	if cfg.LanguageSet {
 		return
 	}
 	if selected, err := lookupStation(rec.Station); err == nil && selected.Language != "" {
-		cfg.language = selected.Language
+		cfg.Language = selected.Language
 	}
 }
 
@@ -853,12 +648,12 @@ func writeRecordingTranscript(path string, transcript recordingTranscript) error
 	return os.Rename(tmp, path)
 }
 
-func writeRecordingTranscriptSummary(w io.Writer, statusText, path, backend string, cfg config) error {
+func writeRecordingTranscriptSummary(w io.Writer, statusText, path, backend string, cfg Config) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	if _, err := fmt.Fprintln(tw, "STATUS\tVERSION\tBACKEND\tMODEL\tLANGUAGE\tPATH"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", statusText, transcriptCacheV1, backend, cfg.model, cfg.language, path); err != nil {
+	if _, err := fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", statusText, transcriptCacheV1, backend, cfg.Model, cfg.Language, path); err != nil {
 		return err
 	}
 	return tw.Flush()
@@ -910,7 +705,7 @@ func ensureRecordingDateDirs(stationRoot string, now time.Time) error {
 	return nil
 }
 
-func runStream(ctx context.Context, cfg config) error {
+func runStream(ctx context.Context, cfg Config) error {
 	selectedStation, stationURL, err := applySelectedStationDefaults(&cfg)
 	if err != nil {
 		return err
@@ -937,7 +732,7 @@ func runStream(ctx context.Context, cfg config) error {
 	return streamToWhisper(ctx, cfg, streamURL)
 }
 
-func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
+func streamToWhisper(ctx context.Context, cfg Config, streamURL string) error {
 	ffmpegStdout, ffmpegDone, err := startPCMStream(ctx, cfg, streamURL)
 	if err != nil {
 		return err
@@ -955,14 +750,14 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 
 	const sampleRate = 16000
 	const bytesPerSample = 2
-	windowBytes := cfg.chunkSeconds * sampleRate * bytesPerSample
-	stepBytes := cfg.stepSeconds * sampleRate * bytesPerSample
-	holdbackSeconds := cfg.holdback.Seconds()
+	windowBytes := cfg.ChunkSeconds * sampleRate * bytesPerSample
+	stepBytes := cfg.StepSeconds * sampleRate * bytesPerSample
+	holdbackSeconds := cfg.Holdback.Seconds()
 
 	status(cfg, "ffmpeg", "streaming raw 16 kHz PCM")
-	status(cfg, "whisper", fmt.Sprintf("streaming %ds rolling windows every %ds", cfg.chunkSeconds, cfg.stepSeconds))
+	status(cfg, "whisper", fmt.Sprintf("streaming %ds rolling windows every %ds", cfg.ChunkSeconds, cfg.StepSeconds))
 
-	wordWriter := newTerminalWordWriter(os.Stdout, cfg.spinner)
+	wordWriter := newTerminalWordWriter(os.Stdout, cfg.Spinner)
 	defer wordWriter.close()
 	if err := wordWriter.tickTuning(); err != nil {
 		return err
@@ -1003,7 +798,7 @@ func streamToWhisper(ctx context.Context, cfg config, streamURL string) error {
 					Duration:      float64(len(window)) / float64(sampleRate*bytesPerSample),
 					SampleRate:    sampleRate,
 					PCM16Base64:   base64.StdEncoding.EncodeToString(window),
-					InitialPrompt: cfg.initialPrompt,
+					InitialPrompt: cfg.InitialPrompt,
 				}
 				if err := worker.send(req); err != nil {
 					if ctx.Err() != nil {
@@ -1117,7 +912,7 @@ type audioMonitor struct {
 	done    chan error
 }
 
-func startPCMStream(ctx context.Context, cfg config, streamURL string) (io.Reader, <-chan error, error) {
+func startPCMStream(ctx context.Context, cfg Config, streamURL string) (io.Reader, <-chan error, error) {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nostdin",
 		"-i", streamURL,
@@ -1125,7 +920,7 @@ func startPCMStream(ctx context.Context, cfg config, streamURL string) (io.Reade
 		"-f", "s16le", "-c:a", "pcm_s16le",
 		"pipe:1",
 	}
-	cmd := exec.CommandContext(ctx, cfg.ffmpegBin, args...)
+	cmd := exec.CommandContext(ctx, cfg.FFmpegBin, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, err
@@ -1145,11 +940,11 @@ func startPCMStream(ctx context.Context, cfg config, streamURL string) (io.Reade
 	return stdout, done, nil
 }
 
-func startAudioMonitor(ctx context.Context, cfg config) (*audioMonitor, error) {
-	if !cfg.monitorAudio {
+func startAudioMonitor(ctx context.Context, cfg Config) (*audioMonitor, error) {
+	if !cfg.MonitorAudio {
 		return &audioMonitor{}, nil
 	}
-	if err := requireBinaries(cfg.ffplayBin); err != nil {
+	if err := requireBinaries(cfg.FFplayBin); err != nil {
 		return nil, err
 	}
 	cmd := audioMonitorCommand(ctx, cfg)
@@ -1181,13 +976,13 @@ func startAudioMonitor(ctx context.Context, cfg config) (*audioMonitor, error) {
 	return monitor, nil
 }
 
-func audioMonitorCommand(ctx context.Context, cfg config) *exec.Cmd {
+func audioMonitorCommand(ctx context.Context, cfg Config) *exec.Cmd {
 	args := []string{
 		"-hide_banner", "-loglevel", "error", "-nodisp",
 		"-f", "s16le", "-sample_rate", "16000", "-ch_layout", "mono",
 		"-i", "pipe:0",
 	}
-	return exec.CommandContext(ctx, cfg.ffplayBin, args...)
+	return exec.CommandContext(ctx, cfg.FFplayBin, args...)
 }
 
 func (m *audioMonitor) writeToPlayer(stdin io.WriteCloser) {
@@ -1236,15 +1031,15 @@ func (m *audioMonitor) close() {
 	}
 }
 
-func startWhisperWorker(cfg config) (*liveWhisperWorker, error) {
+func startWhisperWorker(cfg Config) (*liveWhisperWorker, error) {
 	script := liveWhisperWorkerScript()
-	model := cfg.model
-	if cfg.backend == backendMLX {
+	model := cfg.Model
+	if cfg.Backend == backendMLX {
 		script = liveMLXWorkerScript()
-		model = mlxModelRef(cfg.model)
+		model = mlxModelRef(cfg.Model)
 	}
-	args := []string{"-u", "-c", script, model, filepath.Join(cfg.workDir, "models"), cfg.language}
-	cmd := exec.Command(cfg.pythonBin, args...)
+	args := []string{"-u", "-c", script, model, filepath.Join(cfg.WorkDir, "models"), cfg.Language}
+	cmd := exec.Command(cfg.PythonBin, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -1330,7 +1125,7 @@ func (w *liveWhisperWorker) close() {
 	}
 }
 
-func printStableWords(ctx context.Context, cfg config, writer *terminalWordWriter, resp whisperResponse, stableUntil float64, printedUntil *float64) error {
+func printStableWords(ctx context.Context, cfg Config, writer *terminalWordWriter, resp whisperResponse, stableUntil float64, printedUntil *float64) error {
 	printed := 0
 	for _, word := range resp.Words {
 		start := resp.Offset + word.Start
@@ -1352,8 +1147,8 @@ func printStableWords(ctx context.Context, cfg config, writer *terminalWordWrite
 		}
 		*printedUntil = end
 		printed++
-		if cfg.wordDelay > 0 {
-			time.Sleep(cfg.wordDelay)
+		if cfg.WordDelay > 0 {
+			time.Sleep(cfg.WordDelay)
 		}
 	}
 	if printed > 0 {
@@ -1754,19 +1549,19 @@ for line in sys.stdin:
 `
 }
 
-func transcribe(ctx context.Context, cfg config, model, audioPath string) (whisperOutput, error) {
-	if cfg.backend == backendMLX {
+func transcribe(ctx context.Context, cfg Config, model, audioPath string) (whisperOutput, error) {
+	if cfg.Backend == backendMLX {
 		return transcribeMLX(ctx, cfg, model, audioPath)
 	}
-	outDir := filepath.Join(cfg.workDir, "transcripts", model)
+	outDir := filepath.Join(cfg.WorkDir, "transcripts", model)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return whisperOutput{}, err
 	}
 	args := []string{
 		audioPath,
 		"--model", model,
-		"--model_dir", filepath.Join(cfg.workDir, "models"),
-		"--language", cfg.language,
+		"--model_dir", filepath.Join(cfg.WorkDir, "models"),
+		"--language", cfg.Language,
 		"--task", "transcribe",
 		"--output_format", "json",
 		"--output_dir", outDir,
@@ -1775,10 +1570,10 @@ func transcribe(ctx context.Context, cfg config, model, audioPath string) (whisp
 		"--fp16", "False",
 		"--condition_on_previous_text", "False",
 	}
-	if cfg.initialPrompt != "" {
-		args = append(args, "--initial_prompt", cfg.initialPrompt)
+	if cfg.InitialPrompt != "" {
+		args = append(args, "--initial_prompt", cfg.InitialPrompt)
 	}
-	cmd := exec.CommandContext(ctx, cfg.whisperBin, args...)
+	cmd := exec.CommandContext(ctx, cfg.WhisperBin, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -1799,8 +1594,8 @@ func transcribe(ctx context.Context, cfg config, model, audioPath string) (whisp
 	return out, nil
 }
 
-func transcribeMLX(ctx context.Context, cfg config, model, audioPath string) (whisperOutput, error) {
-	outDir := filepath.Join(cfg.workDir, "transcripts", "mlx-"+model)
+func transcribeMLX(ctx context.Context, cfg Config, model, audioPath string) (whisperOutput, error) {
+	outDir := filepath.Join(cfg.WorkDir, "transcripts", "mlx-"+model)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return whisperOutput{}, err
 	}
@@ -1808,10 +1603,10 @@ func transcribeMLX(ctx context.Context, cfg config, model, audioPath string) (wh
 		"-u", "-c", mlxTranscribeScript(),
 		audioPath,
 		mlxModelRef(model),
-		cfg.language,
-		cfg.initialPrompt,
+		cfg.Language,
+		cfg.InitialPrompt,
 	}
-	cmd := exec.CommandContext(ctx, cfg.pythonBin, args...)
+	cmd := exec.CommandContext(ctx, cfg.PythonBin, args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -1863,21 +1658,21 @@ print("TR1_JSON:" + json.dumps(result, ensure_ascii=False), flush=True)
 `
 }
 
-func runPreview(ctx context.Context, cfg config) error {
+func runPreview(ctx context.Context, cfg Config) error {
 	fixture, transcript, err := loadFixture(cfg)
 	if err != nil {
 		return err
 	}
-	if cfg.previewOut == "" {
-		cfg.previewOut = fixture.AudioPath
+	if cfg.PreviewOut == "" {
+		cfg.PreviewOut = fixture.AudioPath
 	}
-	if err := requireBinaries(cfg.sagBin); err != nil {
+	if err := requireBinaries(cfg.SagBin); err != nil {
 		return err
 	}
 	if os.Getenv("ELEVENLABS_API_KEY") == "" && os.Getenv("ELEVENLABS_API_KEY_FILE") == "" {
 		return fmt.Errorf("set ELEVENLABS_API_KEY or ELEVENLABS_API_KEY_FILE before running preview")
 	}
-	if err := os.MkdirAll(filepath.Dir(cfg.previewOut), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.PreviewOut), 0o755); err != nil {
 		return err
 	}
 	args := []string{
@@ -1889,31 +1684,31 @@ func runPreview(ctx context.Context, cfg config) error {
 		"--stability", "0.62",
 		"--similarity", "0.78",
 		"--speaker-boost",
-		"--output", cfg.previewOut,
+		"--output", cfg.PreviewOut,
 		transcript,
 	}
-	if cfg.sagVoice != "" {
-		args = append(args[:1], append([]string{"--voice", cfg.sagVoice}, args[1:]...)...)
+	if cfg.SagVoice != "" {
+		args = append(args[:1], append([]string{"--voice", cfg.SagVoice}, args[1:]...)...)
 	}
-	cmd := exec.CommandContext(ctx, cfg.sagBin, args...)
+	cmd := exec.CommandContext(ctx, cfg.SagBin, args...)
 	cmd.Stdout = io.Discard
-	if cfg.verbose {
+	if cfg.Verbose {
 		cmd.Stdout = os.Stderr
 	}
 	cmd.Stderr = prefixedStderr(cfg, "sag")
-	status(cfg, "preview", "generating "+cfg.previewOut)
+	status(cfg, "preview", "generating "+cfg.PreviewOut)
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return err
 	}
-	status(cfg, "preview", "wrote "+cfg.previewOut)
+	status(cfg, "preview", "wrote "+cfg.PreviewOut)
 	return nil
 }
 
-func runBenchmark(ctx context.Context, cfg config) error {
-	if err := validateBackend(cfg.backend); err != nil {
+func runBenchmark(ctx context.Context, cfg Config) error {
+	if err := validateBackend(cfg.Backend); err != nil {
 		return err
 	}
 	if err := validateBenchmarkConfig(cfg); err != nil {
@@ -1923,14 +1718,14 @@ func runBenchmark(ctx context.Context, cfg config) error {
 	if err != nil {
 		return err
 	}
-	if cfg.previewOut == "" {
-		cfg.previewOut = fixture.AudioPath
+	if cfg.PreviewOut == "" {
+		cfg.PreviewOut = fixture.AudioPath
 	}
 	backend, err := prepareBackend(ctx, &cfg)
 	if err != nil {
 		return err
 	}
-	audio := cfg.previewOut
+	audio := cfg.PreviewOut
 	if _, err := os.Stat(audio); err != nil {
 		return fmt.Errorf("%s not found; run `go run ./cmd/tr1-lab preview --fixture %s` first", audio, fixture.Name)
 	}
@@ -1938,7 +1733,7 @@ func runBenchmark(ctx context.Context, cfg config) error {
 		return err
 	}
 
-	models := splitCSV(cfg.models)
+	models := splitCSV(cfg.Models)
 	if len(models) == 0 {
 		return fmt.Errorf("no models supplied")
 	}
@@ -1974,23 +1769,23 @@ func runBenchmark(ctx context.Context, cfg config) error {
 	return nil
 }
 
-func validateBenchmarkConfig(cfg config) error {
-	switch strings.ToLower(strings.TrimSpace(cfg.benchmarkMode)) {
+func validateBenchmarkConfig(cfg Config) error {
+	switch strings.ToLower(strings.TrimSpace(cfg.BenchmarkMode)) {
 	case benchmarkModeWhole, benchmarkModeChunked:
 	default:
 		return fmt.Errorf("--mode must be one of: whole, chunked")
 	}
-	if strings.ToLower(strings.TrimSpace(cfg.benchmarkMode)) == benchmarkModeChunked {
+	if strings.ToLower(strings.TrimSpace(cfg.BenchmarkMode)) == benchmarkModeChunked {
 		return validateStreamConfig(cfg)
 	}
 	return nil
 }
 
-func transcribeForBenchmark(ctx context.Context, cfg config, model, audioPath string) (whisperOutput, error) {
-	if strings.ToLower(strings.TrimSpace(cfg.benchmarkMode)) == benchmarkModeChunked {
+func transcribeForBenchmark(ctx context.Context, cfg Config, model, audioPath string) (whisperOutput, error) {
+	if strings.ToLower(strings.TrimSpace(cfg.BenchmarkMode)) == benchmarkModeChunked {
 		chunkedCfg := cfg
-		chunkedCfg.model = model
-		chunkedCfg.wordDelay = 0
+		chunkedCfg.Model = model
+		chunkedCfg.WordDelay = 0
 		text, err := transcribeChunkedFile(ctx, chunkedCfg, audioPath)
 		if err != nil {
 			return whisperOutput{}, err
@@ -2000,7 +1795,7 @@ func transcribeForBenchmark(ctx context.Context, cfg config, model, audioPath st
 	return transcribe(ctx, cfg, model, audioPath)
 }
 
-func transcribeChunkedFile(ctx context.Context, cfg config, audioPath string) (string, error) {
+func transcribeChunkedFile(ctx context.Context, cfg Config, audioPath string) (string, error) {
 	ffmpegStdout, ffmpegDone, err := startPCMStream(ctx, cfg, audioPath)
 	if err != nil {
 		return "", err
@@ -2013,9 +1808,9 @@ func transcribeChunkedFile(ctx context.Context, cfg config, audioPath string) (s
 
 	const sampleRate = 16000
 	const bytesPerSample = 2
-	windowBytes := cfg.chunkSeconds * sampleRate * bytesPerSample
-	stepBytes := cfg.stepSeconds * sampleRate * bytesPerSample
-	holdbackSeconds := cfg.holdback.Seconds()
+	windowBytes := cfg.ChunkSeconds * sampleRate * bytesPerSample
+	stepBytes := cfg.StepSeconds * sampleRate * bytesPerSample
+	holdbackSeconds := cfg.Holdback.Seconds()
 
 	var pcm []byte
 	readBuf := make([]byte, 4096)
@@ -2040,7 +1835,7 @@ func transcribeChunkedFile(ctx context.Context, cfg config, audioPath string) (s
 			Duration:      float64(len(window)) / float64(sampleRate*bytesPerSample),
 			SampleRate:    sampleRate,
 			PCM16Base64:   base64.StdEncoding.EncodeToString(window),
-			InitialPrompt: cfg.initialPrompt,
+			InitialPrompt: cfg.InitialPrompt,
 		}
 		if err := worker.send(req); err != nil {
 			if ctx.Err() != nil {
@@ -2147,8 +1942,8 @@ func transcribeChunkedFile(ctx context.Context, cfg config, audioPath string) (s
 	return strings.Join(words, " "), nil
 }
 
-func loadFixture(cfg config) (benchmarkFixture, string, error) {
-	fixture, err := lookupFixture(cfg.fixture)
+func loadFixture(cfg Config) (benchmarkFixture, string, error) {
+	fixture, err := lookupFixture(cfg.Fixture)
 	if err != nil {
 		return benchmarkFixture{}, "", err
 	}
@@ -2184,49 +1979,32 @@ func fixtureHelp() string {
 	return strings.Join(names, ", ")
 }
 
-func applyStationArg(cfg *config, args []string) error {
-	if len(args) == 0 {
-		return nil
+func applySelectedStationDefaults(cfg *Config) (string, string, error) {
+	if cfg.StreamURL != "" {
+		return "custom stream", cfg.StreamURL, nil
 	}
-	if len(args) > 1 {
-		return fmt.Errorf("expected at most one station, got %d", len(args))
-	}
-	cfg.station = args[0]
-	return nil
-}
-
-func markLanguageOverride(cfg *config, cmd *cobra.Command) {
-	if cmd != nil && cmd.Flags().Changed("language") {
-		cfg.languageSet = true
-	}
-}
-
-func applySelectedStationDefaults(cfg *config) (string, string, error) {
-	if cfg.streamURL != "" {
-		return "custom stream", cfg.streamURL, nil
-	}
-	selected, err := lookupStation(cfg.station)
+	selected, err := lookupStation(cfg.Station)
 	if err != nil {
 		return "", "", err
 	}
-	if !cfg.languageSet && selected.Language != "" {
-		cfg.language = selected.Language
+	if !cfg.LanguageSet && selected.Language != "" {
+		cfg.Language = selected.Language
 	}
 	return selected.Name, selected.URL, nil
 }
 
-func streamSelection(cfg config) (string, string, error) {
-	if cfg.streamURL != "" {
-		return "custom stream", cfg.streamURL, nil
+func streamSelection(cfg Config) (string, string, error) {
+	if cfg.StreamURL != "" {
+		return "custom stream", cfg.StreamURL, nil
 	}
-	selected, err := lookupStation(cfg.station)
+	selected, err := lookupStation(cfg.Station)
 	if err != nil {
 		return "", "", err
 	}
 	return selected.Name, selected.URL, nil
 }
 
-func lookupStation(query string) (station, error) {
+func lookupStation(query string) (Station, error) {
 	key := stationKey(query)
 	if key == "" {
 		key = stationKey(defaultStationAlias)
@@ -2241,7 +2019,7 @@ func lookupStation(query string) (station, error) {
 			}
 		}
 	}
-	return station{}, fmt.Errorf("unknown station %q (try one of: %s)", query, stationHelp())
+	return Station{}, fmt.Errorf("unknown station %q (try one of: %s)", query, stationHelp())
 }
 
 func stationHelp() string {
@@ -2310,18 +2088,18 @@ func stationSlug(s string) string {
 	return out
 }
 
-func recordingStationSlug(cfg config, selectedName string) string {
-	if cfg.streamURL == "" {
-		if selected, err := lookupStation(cfg.station); err == nil && len(selected.Aliases) > 0 {
+func recordingStationSlug(cfg Config, selectedName string) string {
+	if cfg.StreamURL == "" {
+		if selected, err := lookupStation(cfg.Station); err == nil && len(selected.Aliases) > 0 {
 			return stationSlug(selected.Aliases[0])
 		}
 	}
 	return stationSlug(selectedName)
 }
 
-func recordingCacheRoot(cfg config) (string, error) {
-	if cfg.cacheDir != "" {
-		return cfg.cacheDir, nil
+func recordingCacheRoot(cfg Config) (string, error) {
+	if cfg.CacheDir != "" {
+		return cfg.CacheDir, nil
 	}
 	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "tr1"), nil
@@ -2341,7 +2119,7 @@ func recordingSegmentPattern(cacheRoot, stationSlug string) string {
 	return filepath.Join(recordingStationRoot(cacheRoot, stationSlug), "%Y", "%m", "%d", stationSlug+"_%Y%m%dT%H%M%SZ"+defaultRecordExt)
 }
 
-func recordingTranscriptPath(cacheRoot string, rec recording, backend string, cfg config) string {
+func recordingTranscriptPath(cacheRoot string, rec recording, backend string, cfg Config) string {
 	start := rec.StartUTC.UTC()
 	year, month, day := "unknown", "unknown", "unknown"
 	if !start.IsZero() {
@@ -2363,8 +2141,8 @@ func recordingTranscriptPath(cacheRoot string, rec recording, backend string, cf
 		day,
 		stationSlug(recordingName),
 		stationSlug(backend),
-		stationSlug(cfg.model),
-		stationSlug(cfg.language)+".json",
+		stationSlug(cfg.Model),
+		stationSlug(cfg.Language)+".json",
 	)
 }
 
@@ -2532,11 +2310,11 @@ func resolveStreamURL(ctx context.Context, rawURL string) (string, error) {
 	return rawURL, nil
 }
 
-func ensureDirs(cfg config) error {
+func ensureDirs(cfg Config) error {
 	for _, dir := range []string{
-		cfg.workDir,
-		filepath.Join(cfg.workDir, "models"),
-		filepath.Join(cfg.workDir, "transcripts"),
+		cfg.WorkDir,
+		filepath.Join(cfg.WorkDir, "models"),
+		filepath.Join(cfg.WorkDir, "transcripts"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
@@ -2566,11 +2344,11 @@ func validateBackend(backend string) error {
 	}
 }
 
-func prepareBackend(ctx context.Context, cfg *config) (string, error) {
-	backend := strings.ToLower(strings.TrimSpace(cfg.backend))
+func prepareBackend(ctx context.Context, cfg *Config) (string, error) {
+	backend := strings.ToLower(strings.TrimSpace(cfg.Backend))
 	if backend == backendAuto {
 		if mlxSupportedHardware() {
-			if _, err := exec.LookPath(cfg.uvBin); err == nil {
+			if _, err := exec.LookPath(cfg.UVBin); err == nil {
 				backend = backendMLX
 			} else {
 				backend = backendCPU
@@ -2579,27 +2357,27 @@ func prepareBackend(ctx context.Context, cfg *config) (string, error) {
 			backend = backendCPU
 		}
 	}
-	cfg.backend = backend
+	cfg.Backend = backend
 	switch backend {
 	case backendCPU:
-		if err := requireBinaries(cfg.ffmpegBin, cfg.whisperBin); err != nil {
+		if err := requireBinaries(cfg.FFmpegBin, cfg.WhisperBin); err != nil {
 			return "", err
 		}
 		pythonBin, err := whisperPythonBin(*cfg)
 		if err != nil {
 			return "", err
 		}
-		cfg.pythonBin = pythonBin
+		cfg.PythonBin = pythonBin
 		return backendCPU, nil
 	case backendMLX:
-		if err := requireBinaries(cfg.ffmpegBin, cfg.uvBin); err != nil {
+		if err := requireBinaries(cfg.FFmpegBin, cfg.UVBin); err != nil {
 			return "", err
 		}
 		pythonBin, err := ensureMLXEnv(ctx, *cfg)
 		if err != nil {
 			return "", err
 		}
-		cfg.pythonBin = pythonBin
+		cfg.PythonBin = pythonBin
 		return backendMLX, nil
 	default:
 		return "", fmt.Errorf("--backend must be one of: auto, cpu, mlx")
@@ -2610,8 +2388,8 @@ func mlxSupportedHardware() bool {
 	return runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
 }
 
-func ensureMLXEnv(ctx context.Context, cfg config) (string, error) {
-	projectDir := filepath.Join(cfg.workDir, "mlx")
+func ensureMLXEnv(ctx context.Context, cfg Config) (string, error) {
+	projectDir := filepath.Join(cfg.WorkDir, "mlx")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return "", err
 	}
@@ -2619,9 +2397,9 @@ func ensureMLXEnv(ctx context.Context, cfg config) (string, error) {
 	if err := os.WriteFile(pyprojectPath, []byte(embeddedPyproject), 0o644); err != nil {
 		return "", err
 	}
-	cmd := exec.CommandContext(ctx, cfg.uvBin, "sync", "--project", projectDir, "--quiet")
+	cmd := exec.CommandContext(ctx, cfg.UVBin, "sync", "--project", projectDir, "--quiet")
 	cmd.Stderr = prefixedStderr(cfg, "uv")
-	if cfg.verbose {
+	if cfg.Verbose {
 		cmd.Stdout = os.Stderr
 	} else {
 		cmd.Stdout = io.Discard
@@ -2642,16 +2420,16 @@ func mlxModelRef(model string) string {
 	return fmt.Sprintf(defaultMLXModelRepo, model)
 }
 
-func whisperPythonBin(cfg config) (string, error) {
-	if cfg.pythonBin != "" {
-		if _, err := exec.LookPath(cfg.pythonBin); err != nil {
-			return "", fmt.Errorf("%s not found in PATH", cfg.pythonBin)
+func whisperPythonBin(cfg Config) (string, error) {
+	if cfg.PythonBin != "" {
+		if _, err := exec.LookPath(cfg.PythonBin); err != nil {
+			return "", fmt.Errorf("%s not found in PATH", cfg.PythonBin)
 		}
-		return cfg.pythonBin, nil
+		return cfg.PythonBin, nil
 	}
-	whisperPath, err := exec.LookPath(cfg.whisperBin)
+	whisperPath, err := exec.LookPath(cfg.WhisperBin)
 	if err != nil {
-		return "", fmt.Errorf("%s not found in PATH", cfg.whisperBin)
+		return "", fmt.Errorf("%s not found in PATH", cfg.WhisperBin)
 	}
 	file, err := os.Open(whisperPath)
 	if err != nil {
@@ -2876,15 +2654,15 @@ func boolFromEnv(name string, fallback bool) bool {
 	}
 }
 
-func status(cfg config, scope, msg string) {
-	if !cfg.verbose {
+func status(cfg Config, scope, msg string) {
+	if !cfg.Verbose {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "\n[%s] %s\n", scope, msg)
 }
 
-func prefixedStderr(cfg config, prefix string) io.Writer {
-	if !cfg.verbose {
+func prefixedStderr(cfg Config, prefix string) io.Writer {
+	if !cfg.Verbose {
 		return io.Discard
 	}
 	return &prefixWriter{prefix: prefix}

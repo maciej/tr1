@@ -43,7 +43,7 @@ func TestLookupStationAliases(t *testing.T) {
 }
 
 func TestApplySelectedStationDefaultsUsesStationLanguage(t *testing.T) {
-	cfg := config{station: "bbc", language: "Polish"}
+	cfg := Config{Station: "bbc", Language: "Polish"}
 
 	name, url, err := applySelectedStationDefaults(&cfg)
 	if err != nil {
@@ -55,27 +55,27 @@ func TestApplySelectedStationDefaultsUsesStationLanguage(t *testing.T) {
 	if url != "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service" {
 		t.Fatalf("station URL = %q, want BBC World Service URL", url)
 	}
-	if cfg.language != "English" {
-		t.Fatalf("language = %q, want English", cfg.language)
+	if cfg.Language != "English" {
+		t.Fatalf("language = %q, want English", cfg.Language)
 	}
 }
 
 func TestApplySelectedStationDefaultsKeepsLanguageOverride(t *testing.T) {
-	cfg := config{station: "bbc", language: "Spanish", languageSet: true}
+	cfg := Config{Station: "bbc", Language: "Spanish", LanguageSet: true}
 
 	if _, _, err := applySelectedStationDefaults(&cfg); err != nil {
 		t.Fatalf("applySelectedStationDefaults returned error: %v", err)
 	}
-	if cfg.language != "Spanish" {
-		t.Fatalf("language = %q, want explicit override Spanish", cfg.language)
+	if cfg.Language != "Spanish" {
+		t.Fatalf("language = %q, want explicit override Spanish", cfg.Language)
 	}
 }
 
 func TestApplySelectedStationDefaultsSkipsCustomStream(t *testing.T) {
-	cfg := config{
-		station:   "bbc",
-		streamURL: "https://example.com/custom.mp3",
-		language:  "Polish",
+	cfg := Config{
+		Station:   "bbc",
+		StreamURL: "https://example.com/custom.mp3",
+		Language:  "Polish",
 	}
 
 	name, url, err := applySelectedStationDefaults(&cfg)
@@ -88,15 +88,15 @@ func TestApplySelectedStationDefaultsSkipsCustomStream(t *testing.T) {
 	if url != "https://example.com/custom.mp3" {
 		t.Fatalf("station URL = %q, want custom URL", url)
 	}
-	if cfg.language != "Polish" {
-		t.Fatalf("language = %q, want unchanged Polish", cfg.language)
+	if cfg.Language != "Polish" {
+		t.Fatalf("language = %q, want unchanged Polish", cfg.Language)
 	}
 }
 
 func TestStreamSelectionCustomURL(t *testing.T) {
-	gotName, gotURL, err := streamSelection(config{
-		station:   "rmf",
-		streamURL: "https://example.com/custom.mp3",
+	gotName, gotURL, err := streamSelection(Config{
+		Station:   "rmf",
+		StreamURL: "https://example.com/custom.mp3",
 	})
 	if err != nil {
 		t.Fatalf("streamSelection returned error: %v", err)
@@ -354,7 +354,7 @@ func TestTerminalWordWriterSpinnerAppearsAfterPrintedWords(t *testing.T) {
 		},
 	}
 
-	if err := printStableWords(t.Context(), config{}, writer, resp, 10, &printedUntil); err != nil {
+	if err := printStableWords(t.Context(), Config{}, writer, resp, 10, &printedUntil); err != nil {
 		t.Fatalf("printStableWords returned error: %v", err)
 	}
 	if err := writer.tickSpinner(); err != nil {
@@ -387,7 +387,7 @@ func TestPrintStableWordsUsesTerminalWriter(t *testing.T) {
 		},
 	}
 
-	if err := printStableWords(t.Context(), config{}, writer, resp, 10, &printedUntil); err != nil {
+	if err := printStableWords(t.Context(), Config{}, writer, resp, 10, &printedUntil); err != nil {
 		t.Fatalf("printStableWords returned error: %v", err)
 	}
 
@@ -398,7 +398,7 @@ func TestPrintStableWordsUsesTerminalWriter(t *testing.T) {
 }
 
 func TestAudioMonitorCommandConsumesPCMFromStdin(t *testing.T) {
-	cmd := audioMonitorCommand(t.Context(), config{ffplayBin: "ffplay"})
+	cmd := audioMonitorCommand(t.Context(), Config{FFplayBin: "ffplay"})
 
 	got := strings.Join(cmd.Args, " ")
 	for _, want := range []string{
@@ -442,88 +442,11 @@ func TestTerminalResizeListenerRefreshesWidthOnSIGWINCH(t *testing.T) {
 	t.Fatalf("terminal width = %d, want 24 after SIGWINCH", columns.current())
 }
 
-func TestStationsCommandListsAvailableStations(t *testing.T) {
-	cmd := NewRootCommand(t.Context())
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"stations"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("stations command returned error: %v", err)
-	}
-
-	got := out.String()
-	for _, want := range []string{
-		"ALIAS",
-		"NAME",
-		"LANGUAGE",
-		"URL",
-		"tokfm",
-		"TokFM",
-		"Polish",
-		"bbc",
-		"BBC World Service",
-		"English",
-		"trojka, trójka, pr3, program3, program-3, troika, radio3, radio-3, three, 3",
-		"https://rs201-krk-cyfronet.rmfstream.pl/rmf_fm",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("stations output missing %q:\n%s", want, got)
-		}
-	}
-}
-
-func TestStationsCommandRejectsArgs(t *testing.T) {
-	cmd := NewRootCommand(t.Context())
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"stations", "rmf"})
-
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("stations command accepted unexpected argument")
-	}
-}
-
-func TestLabExecutableOwnsNonEndUserCommands(t *testing.T) {
-	cmd := NewLabCommand(t.Context())
-
-	if found, _, err := cmd.Find([]string{"preview"}); err != nil || found == nil || found.Name() != "preview" {
-		t.Fatalf("preview command lookup failed: command=%v err=%v", found, err)
-	}
-	if found, _, err := cmd.Find([]string{"benchmark"}); err != nil || found == nil || found.Name() != "benchmark" {
-		t.Fatalf("benchmark command lookup failed: command=%v err=%v", found, err)
-	}
-	if found, _, err := cmd.Find([]string{"record"}); err != nil || found == nil || found.Name() != "record" {
-		t.Fatalf("record command lookup failed: command=%v err=%v", found, err)
-	}
-	if found, _, err := cmd.Find([]string{"record", "list"}); err != nil || found == nil || found.Name() != "list" {
-		t.Fatalf("record list command lookup failed: command=%v err=%v", found, err)
-	}
-	if found, _, err := cmd.Find([]string{"preview-local"}); err == nil && found != nil && found.Name() == "preview-local" {
-		t.Fatal("preview-local command is still registered")
-	}
-}
-
-func TestRootCommandExcludesNonEndUserCommands(t *testing.T) {
-	cmd := NewRootCommand(t.Context())
-
-	if found, _, err := cmd.Find([]string{"lab"}); err == nil && found != nil && found.Name() == "lab" {
-		t.Fatal("lab command is still registered on tr1")
-	}
-	if found, _, err := cmd.Find([]string{"preview"}); err == nil && found != nil && found.Name() == "preview" {
-		t.Fatal("preview command is still registered on tr1")
-	}
-	if found, _, err := cmd.Find([]string{"benchmark"}); err == nil && found != nil && found.Name() == "benchmark" {
-		t.Fatal("benchmark command is still registered on tr1")
-	}
-}
-
 func TestRecordingCacheRootUsesXDGCacheHome(t *testing.T) {
 	cacheHome := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cacheHome)
 
-	got, err := recordingCacheRoot(config{})
+	got, err := recordingCacheRoot(Config{})
 	if err != nil {
 		t.Fatalf("recordingCacheRoot returned error: %v", err)
 	}
@@ -536,7 +459,7 @@ func TestRecordingCacheRootUsesXDGCacheHome(t *testing.T) {
 func TestRecordingCacheRootUsesExplicitCacheDirAsRoot(t *testing.T) {
 	cacheRoot := t.TempDir()
 
-	got, err := recordingCacheRoot(config{cacheDir: cacheRoot})
+	got, err := recordingCacheRoot(Config{CacheDir: cacheRoot})
 	if err != nil {
 		t.Fatalf("recordingCacheRoot returned error: %v", err)
 	}
@@ -568,14 +491,9 @@ func TestRecordListCommandListsStationRecordings(t *testing.T) {
 		}
 	}
 
-	cmd := NewLabCommand(t.Context())
 	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"record", "list", "--cache-dir", cacheRoot, "tok"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("record list command returned error: %v", err)
+	if err := runRecordList(&out, Config{CacheDir: cacheRoot, Station: "tok"}); err != nil {
+		t.Fatalf("runRecordList returned error: %v", err)
 	}
 
 	got := out.String()
@@ -585,7 +503,7 @@ func TestRecordListCommandListsStationRecordings(t *testing.T) {
 		}
 	}
 	if strings.Contains(got, rmfPath) {
-		t.Fatalf("record list output included another station:\n%s", got)
+		t.Fatalf("record list output included another Station:\n%s", got)
 	}
 }
 
@@ -603,14 +521,9 @@ func TestRecordListCommandWithoutStationListsAllRecordings(t *testing.T) {
 		}
 	}
 
-	cmd := NewLabCommand(t.Context())
 	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"record", "list", "--cache-dir", cacheRoot})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("record list command returned error: %v", err)
+	if err := runRecordList(&out, Config{CacheDir: cacheRoot}); err != nil {
+		t.Fatalf("runRecordList returned error: %v", err)
 	}
 
 	got := out.String()
@@ -655,7 +568,7 @@ func TestRecordingTranscriptPathIsVersionedByRecordingAndModel(t *testing.T) {
 		Path:     filepath.Join(cacheRoot, "recordings", "bbc", "2026", "05", "18", "bbc_20260518T120000Z.mka"),
 	}
 
-	got := recordingTranscriptPath(cacheRoot, rec, backendCPU, config{model: "tiny.en", language: "English"})
+	got := recordingTranscriptPath(cacheRoot, rec, backendCPU, Config{Model: "tiny.en", Language: "English"})
 	want := filepath.Join(cacheRoot, "transcripts", transcriptCacheV1, "bbc", "2026", "05", "18", "bbc-20260518t120000z", "cpu", "tiny-en", "english.json")
 	if got != want {
 		t.Fatalf("recording transcript path = %q, want %q", got, want)
@@ -699,7 +612,7 @@ func TestRecordTranscribeCommandFindsCachedTranscript(t *testing.T) {
 		Path:     recordingPath,
 		Bytes:    5,
 	}
-	transcriptPath := recordingTranscriptPath(cacheRoot, rec, backendCPU, config{model: "tiny", language: "English"})
+	transcriptPath := recordingTranscriptPath(cacheRoot, rec, backendCPU, Config{Model: "tiny", Language: "English"})
 	if err := writeRecordingTranscript(transcriptPath, recordingTranscript{
 		Version:  transcriptCacheV1,
 		Created:  "2026-05-18T12:01:00Z",
@@ -712,14 +625,10 @@ func TestRecordTranscribeCommandFindsCachedTranscript(t *testing.T) {
 		t.Fatalf("writeRecordingTranscript returned error: %v", err)
 	}
 
-	cmd := NewLabCommand(t.Context())
 	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"record", "transcribe", "--cache-dir", cacheRoot, "--backend", backendCPU, "--model", "tiny", "bbc"})
-
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("record transcribe command returned error: %v", err)
+	cfg := Config{CacheDir: cacheRoot, Backend: backendCPU, Model: "tiny", Language: "English"}
+	if err := runRecordTranscribe(&out, t.Context(), cfg, "bbc"); err != nil {
+		t.Fatalf("runRecordTranscribe returned error: %v", err)
 	}
 
 	got := out.String()
