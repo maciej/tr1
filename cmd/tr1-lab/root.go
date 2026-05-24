@@ -167,7 +167,101 @@ func newProgrammesCommand(ctx context.Context, cfg *tr1.Config) *cobra.Command {
 	flags.StringVar(&sourceURL, "source-url", sourceURL, "programme schedule page URL")
 	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
 	flags.DurationVar(&timeout, "timeout", timeout, "HTTP timeout for programme schedule fetches")
+	cmd.AddCommand(newProgrammesTranscribeCommand(ctx, cfg, &sourceURL, &timeout))
 	return cmd
+}
+
+func newProgrammesTranscribeCommand(ctx context.Context, cfg *tr1.Config, sourceURL *string, timeout *time.Duration) *cobra.Command {
+	opts := tr1.DefaultProgrammeTranscribeOptions()
+	refreshSchedule := false
+	cmd := &cobra.Command{
+		Use:   "transcribe [station]",
+		Short: "Cut cached TOK FM recordings into programme windows and transcribe them",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := applyStationArg(cfg, args); err != nil {
+				return err
+			}
+			opts.Station = cfg.Station
+			markLanguageOverride(cfg, cmd)
+			if err := validateProgrammesConfig(*cfg, *sourceURL, "json", *timeout); err != nil {
+				return err
+			}
+			schedule, err := loadTokFMSchedule(ctx, *cfg, *sourceURL, *timeout, refreshSchedule)
+			if err != nil {
+				return err
+			}
+			opts.Schedule = schedule
+			opts.Force = cfg.TranscribeForce
+			if err := tr1.ValidateProgrammeTranscribeConfig(*cfg, opts); err != nil {
+				return err
+			}
+			return tr1.RunProgrammeTranscribe(cmd.OutOrStdout(), ctx, *cfg, opts)
+		},
+	}
+	flags := cmd.Flags()
+	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.StringVar(&cfg.Model, "model", cfg.Model, "Whisper model")
+	flags.StringVar(&cfg.Language, "language", cfg.Language, "Whisper language; defaults to the recording station language when known")
+	flags.StringVar(&cfg.Backend, "backend", cfg.Backend, "transcription backend: auto, cpu, or mlx")
+	flags.StringVar(&cfg.WorkDir, "workdir", cfg.WorkDir, "runtime working directory")
+	flags.StringVar(&cfg.WhisperBin, "whisper-bin", cfg.WhisperBin, "whisper executable")
+	flags.StringVar(&cfg.UVBin, "uv-bin", cfg.UVBin, "uv executable used to provision the MLX Python runtime")
+	flags.StringVar(&cfg.PythonBin, "python-bin", cfg.PythonBin, "python executable for live Whisper worker; defaults to the whisper CLI interpreter")
+	flags.StringVar(&cfg.FFmpegBin, "ffmpeg-bin", cfg.FFmpegBin, "ffmpeg executable")
+	flags.StringVar(&cfg.InitialPrompt, "initial-prompt", cfg.InitialPrompt, "Whisper initial prompt")
+	flags.BoolVar(&cfg.TranscribeForce, "force", cfg.TranscribeForce, "recompute programme audio and transcript even when cached")
+	flags.StringVar(&opts.From, "from", opts.From, "only transcribe programmes ending after this local/RFC3339 time")
+	flags.StringVar(&opts.To, "to", opts.To, "only transcribe programmes starting before this local/RFC3339 time")
+	flags.IntVar(&opts.Limit, "limit", opts.Limit, "maximum number of programme windows to process; 0 means all")
+	flags.DurationVar(&opts.StreamDelay, "stream-delay", opts.StreamDelay, "internet stream delay relative to schedule; positive means captured audio lags")
+	flags.DurationVar(&opts.PreRoll, "pre-roll", opts.PreRoll, "extra audio before each scheduled programme boundary")
+	flags.DurationVar(&opts.PostRoll, "post-roll", opts.PostRoll, "extra audio after each scheduled programme boundary")
+	flags.DurationVar(&opts.MinDuration, "min-duration", opts.MinDuration, "skip programme windows with less cached audio than this")
+	flags.DurationVar(&opts.TranscribeChunk, "transcribe-chunk-duration", opts.TranscribeChunk, "internal chunk size for long programme transcription; 0 disables chunking")
+	flags.StringVar(&opts.WindowMode, "window-mode", opts.WindowMode, "schedule windowing mode: programme or segment")
+	flags.StringVar(&opts.Timezone, "timezone", opts.Timezone, "programme schedule timezone")
+	flags.BoolVar(&opts.PriorityOnly, "priority-only", opts.PriorityOnly, "only process talk/news/political programme windows")
+	flags.BoolVar(&opts.PlanOnly, "plan-only", opts.PlanOnly, "show programme windows that would be processed without cutting audio or transcribing")
+	flags.BoolVar(&opts.Diarize, "diarize", opts.Diarize, "run pyannote speaker diarization; use --diarize=false to skip it")
+	flags.BoolVar(&opts.SpeakerMap, "speaker-map", opts.SpeakerMap, "ask codex mini to map speaker labels and clean ads/music; use --speaker-map=false to skip it")
+	flags.StringVar(&opts.PyannotePythonBin, "pyannote-python-bin", opts.PyannotePythonBin, "python executable with pyannote.audio installed")
+	flags.StringVar(&opts.PyannoteModel, "pyannote-model", opts.PyannoteModel, "pyannote diarization pipeline repo")
+	flags.StringVar(&opts.PyannoteDevice, "pyannote-device", opts.PyannoteDevice, "pyannote torch device: auto, cpu, mps, or cuda")
+	flags.StringVar(&opts.CodexBin, "codex-bin", opts.CodexBin, "codex CLI executable used for speaker-name mapping")
+	flags.StringVar(&opts.CodexModel, "codex-model", opts.CodexModel, "codex model used for speaker-name mapping")
+	flags.StringVar(sourceURL, "source-url", *sourceURL, "programme schedule page URL")
+	flags.DurationVar(timeout, "timeout", *timeout, "HTTP timeout for programme schedule fetches")
+	flags.BoolVar(&refreshSchedule, "refresh-schedule", refreshSchedule, "fetch the TOK FM schedule before transcribing")
+	return cmd
+}
+
+func loadTokFMSchedule(ctx context.Context, cfg tr1.Config, sourceURL string, timeout time.Duration, refresh bool) (programmes.Schedule, error) {
+	cacheRoot, err := tr1.CacheRoot(cfg.CacheDir)
+	if err != nil {
+		return programmes.Schedule{}, err
+	}
+	store := programmes.NewSQLiteStore(programmes.CachePath(cacheRoot))
+	if !refresh {
+		schedule, err := store.LatestSchedule(ctx, "TokFM")
+		if err == nil {
+			status(cfg, "programme-cache", "using cached schedule fetched at "+schedule.FetchedAt)
+			return schedule, nil
+		}
+		status(cfg, "programme-cache", "no cached schedule available; fetching")
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	schedule, err := tokfm.Fetch(fetchCtx, http.DefaultClient, sourceURL)
+	if err != nil {
+		return programmes.Schedule{}, err
+	}
+	cacheResult, err := store.PutSchedule(ctx, schedule)
+	if err != nil {
+		return programmes.Schedule{}, err
+	}
+	status(cfg, "programme-cache", fmt.Sprintf("stored %d new entries in %s", cacheResult.NewEntries, cacheResult.Path))
+	return schedule, nil
 }
 
 func validateProgrammesConfig(cfg tr1.Config, sourceURL, format string, timeout time.Duration) error {

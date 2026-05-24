@@ -9,6 +9,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"tr1/internal/programmes"
 )
 
 func TestLookupStationAliases(t *testing.T) {
@@ -652,6 +654,220 @@ func TestRecordRestartDelayBacksOffAndCaps(t *testing.T) {
 	for attempt, want := range tests {
 		if got := recordRestartDelay(base, attempt); got != want {
 			t.Fatalf("recordRestartDelay(%d) = %s, want %s", attempt, got, want)
+		}
+	}
+}
+
+func TestProgrammeWindowsUseScheduleWeekAndDurationGap(t *testing.T) {
+	loc, err := time.LoadLocation(defaultProgrammeTimezone)
+	if err != nil {
+		t.Fatalf("LoadLocation returned error: %v", err)
+	}
+	schedule := programmes.Schedule{
+		Station:   "TokFM",
+		FetchedAt: "2026-05-22T14:00:00Z",
+		Entries: []programmes.Entry{
+			{DayIndex: 0, Day: "Monday", Time: "20:00", Programme: "Mikrofon TOK FM", Duration: "79 min"},
+			{DayIndex: 0, Day: "Monday", Time: "22:00", Programme: "Maciej Zakrocki przedstawia", Duration: "52 min"},
+		},
+	}
+
+	windows, err := programmeWindows(schedule, loc, ProgrammeTranscribeOptions{WindowMode: "segment"})
+	if err != nil {
+		t.Fatalf("programmeWindows returned error: %v", err)
+	}
+	if len(windows) != 2 {
+		t.Fatalf("programme window count = %d, want 2", len(windows))
+	}
+	if got, want := windows[0].StartUTC.Format(time.RFC3339), "2026-05-18T18:00:00Z"; got != want {
+		t.Fatalf("first programme start UTC = %s, want %s", got, want)
+	}
+	if got, want := windows[0].EndUTC.Format(time.RFC3339), "2026-05-18T19:19:00Z"; got != want {
+		t.Fatalf("first programme end UTC = %s, want %s", got, want)
+	}
+}
+
+func TestProgrammeWindowsGroupScheduleRowsByProgrammeFamily(t *testing.T) {
+	loc, err := time.LoadLocation(defaultProgrammeTimezone)
+	if err != nil {
+		t.Fatalf("LoadLocation returned error: %v", err)
+	}
+	schedule := programmes.Schedule{
+		Station:   "TokFM",
+		FetchedAt: "2026-05-22T14:00:00Z",
+		Entries: []programmes.Entry{
+			{DayIndex: 1, Day: "Tuesday", Time: "05:00", Programme: "Pierwszy Program", Hosts: []string{"Wojciech Muzal"}},
+			{DayIndex: 1, Day: "Tuesday", Time: "05:20", Programme: "Pierwszy Program", Duration: "30 min", Hosts: []string{"Wojciech Muzal"}},
+			{DayIndex: 1, Day: "Tuesday", Time: "05:40", Programme: "Pierwszy Program", Duration: "4 min", Hosts: []string{"Wojciech Muzal"}},
+			{DayIndex: 1, Day: "Tuesday", Time: "07:00", Programme: "Poranek TOK FM - Maciej Kluczka", Hosts: []string{"Maciej Kluczka"}},
+		},
+	}
+
+	windows, err := programmeWindows(schedule, loc, ProgrammeTranscribeOptions{})
+	if err != nil {
+		t.Fatalf("programmeWindows returned error: %v", err)
+	}
+	if len(windows) != 2 {
+		t.Fatalf("programme window count = %d, want 2", len(windows))
+	}
+	if got, want := windows[0].Entry.Programme, "Pierwszy Program"; got != want {
+		t.Fatalf("first grouped programme = %q, want %q", got, want)
+	}
+	if got, want := windows[0].EndLocal.Format("15:04"), "07:00"; got != want {
+		t.Fatalf("first grouped end local = %s, want %s", got, want)
+	}
+}
+
+func TestDefaultProgrammeTranscribeOptionsRunFullPipeline(t *testing.T) {
+	opts := DefaultProgrammeTranscribeOptions()
+	if !opts.Diarize {
+		t.Fatal("default programme transcribe options should enable diarization")
+	}
+	if !opts.SpeakerMap {
+		t.Fatal("default programme transcribe options should enable speaker mapping and cleanup")
+	}
+}
+
+func TestProgrammeDiarizationPathIncludesModel(t *testing.T) {
+	loc, err := time.LoadLocation(defaultProgrammeTimezone)
+	if err != nil {
+		t.Fatalf("LoadLocation returned error: %v", err)
+	}
+	cacheRoot := t.TempDir()
+	window := programmeWindow{
+		Station:    "tokfm",
+		StartLocal: time.Date(2026, 5, 19, 5, 0, 0, 0, loc),
+		ID:         "0500-pierwszy-program",
+	}
+
+	got := programmeDiarizationPath(cacheRoot, window, loc, "pyannote/speaker-diarization-community-1", "mps")
+	want := filepath.Join(cacheRoot, "programmes", "diarization", programmeDiarizationCacheV1, "tokfm", "pyannote-speaker-diarization-community-1", "mps", "2026", "05", "19", "0500-pierwszy-program.json")
+	if got != want {
+		t.Fatalf("programmeDiarizationPath = %q, want %q", got, want)
+	}
+}
+
+func TestSpeakerMapPromptUsesBoundedExcerpts(t *testing.T) {
+	window := programmeWindow{
+		StartLocal: time.Date(2026, 5, 19, 7, 0, 0, 0, time.UTC),
+		Entry: programmes.Entry{
+			Programme: "Poranek TOK FM",
+			Hosts:     []string{"Jan Nowak"},
+		},
+	}
+	var paragraphs []diarizedParagraph
+	for i := 0; i < 100; i++ {
+		speaker := "SPEAKER_00"
+		if i%2 == 1 {
+			speaker = "SPEAKER_01"
+		}
+		paragraphs = append(paragraphs, diarizedParagraph{
+			Speaker: speaker,
+			Text:    strings.Repeat("bardzo dlugi fragment ", 80),
+		})
+	}
+
+	prompt := speakerMapPrompt(window, paragraphs)
+	if len(prompt) > 26000 {
+		t.Fatalf("speaker map prompt length = %d, want bounded prompt", len(prompt))
+	}
+	if !strings.Contains(prompt, "[transcript excerpt truncated]") {
+		t.Fatalf("speaker map prompt should note transcript truncation:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Representative samples by diarization label") {
+		t.Fatalf("speaker map prompt missing speaker samples:\n%s", prompt)
+	}
+}
+
+func TestProgrammeAdPostprocessPromptRemovesAdsAndMusic(t *testing.T) {
+	window := programmeWindow{
+		StartLocal: time.Date(2026, 5, 19, 7, 0, 0, 0, time.UTC),
+		Entry:      programmes.Entry{Programme: "Poranek TOK FM"},
+	}
+	prompt := programmeAdPostprocessPrompt(window, []programmeMarkdownParagraph{
+		{ID: 1, Speaker: "Jan Nowak", Text: "Wracamy po przerwie.", Start: 0, End: 3},
+	})
+
+	for _, want := range []string{"any language", "reklama", "autopromocja", "advertisement", "songs", "sung lyrics", "music beds", "If unsure, keep it"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("programmeAdPostprocessPrompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestSpeakerMapSamplesSkipLikelyNonProgrammeAudio(t *testing.T) {
+	paragraphs := []diarizedParagraph{
+		{Speaker: "SPEAKER_00", Text: "No one knows what it's like to be the bad man"},
+		{Speaker: "SPEAKER_01", Text: "Zapraszamy do sklepu. Promocja tylko dzisiaj."},
+		{Speaker: "SPEAKER_02", Text: "Dzień dobry, Jan Nowak, dzisiaj rozmawiamy o polityce."},
+	}
+
+	samples := speakerMapSamples(paragraphs, 3, 600, 45)
+	if len(samples) != 1 {
+		t.Fatalf("speakerMapSamples count = %d, want 1: %#v", len(samples), samples)
+	}
+	if samples[0].Speaker != "SPEAKER_02" {
+		t.Fatalf("speakerMapSamples speaker = %q, want SPEAKER_02", samples[0].Speaker)
+	}
+}
+
+func TestParseProgrammeAdDecision(t *testing.T) {
+	decision, err := parseProgrammeAdDecision(`{"remove":[{"id":2,"reason":"autopromo"}],"rewrites":[{"id":3,"text":"zostaje","reason":"embedded ad"}]}`)
+	if err != nil {
+		t.Fatalf("parseProgrammeAdDecision returned error: %v", err)
+	}
+	if len(decision.Remove) != 1 || decision.Remove[0].ID != 2 {
+		t.Fatalf("remove decisions = %#v, want id 2", decision.Remove)
+	}
+	if len(decision.Rewrites) != 1 || decision.Rewrites[0].Text != "zostaje" {
+		t.Fatalf("rewrite decisions = %#v, want rewritten text", decision.Rewrites)
+	}
+}
+
+func TestParseProgrammeAdDecisionAcceptsNumericRemoveIDs(t *testing.T) {
+	decision, err := parseProgrammeAdDecision(`{"remove":[2,3],"rewrites":null}`)
+	if err != nil {
+		t.Fatalf("parseProgrammeAdDecision returned error: %v", err)
+	}
+	if len(decision.Remove) != 2 || decision.Remove[0].ID != 2 || decision.Remove[1].ID != 3 {
+		t.Fatalf("remove decisions = %#v, want numeric ids 2 and 3", decision.Remove)
+	}
+	if decision.Remove[0].Reason == "" {
+		t.Fatalf("numeric remove decision should get a default reason: %#v", decision.Remove)
+	}
+}
+
+func TestMarkMusicBridgeFragmentsRemovesShortLyricsBoundary(t *testing.T) {
+	paragraphs := []programmeMarkdownParagraph{
+		{ID: 1, Speaker: "Host", Text: "Behind Blue Eyes."},
+		{ID: 2, Speaker: "UNKNOWN", Text: "Dzień dobry."},
+		{ID: 3, Speaker: "SPEAKER_39", Text: "No one knows what it's like."},
+	}
+	removed := map[int]programmeRemovedBlock{
+		3: {ID: 3, Reason: "song lyrics", Text: paragraphs[2].Text},
+	}
+
+	markMusicBridgeFragments(paragraphs, removed)
+	if _, ok := removed[2]; !ok {
+		t.Fatalf("short bridge before song lyrics was not removed: %#v", removed)
+	}
+	if _, ok := removed[1]; ok {
+		t.Fatalf("host intro should not be removed: %#v", removed)
+	}
+}
+
+func TestProgrammeMarkdownFromParagraphsCutsRemovedAds(t *testing.T) {
+	window := programmeWindow{Entry: programmes.Entry{Programme: "Programme"}}
+	markdown := programmeMarkdownFromParagraphs(window, []programmeMarkdownParagraph{
+		{ID: 1, Speaker: "Jan Nowak", Text: "Program content."},
+		{ID: 3, Speaker: "Jan Nowak", Text: "Back to content."},
+	})
+	if strings.Contains(strings.ToLower(markdown), "reklama") {
+		t.Fatalf("markdown still contains ad text:\n%s", markdown)
+	}
+	for _, want := range []string{"# Programme", "Jan Nowak: Program content.", "Jan Nowak: Back to content."} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
 		}
 	}
 }

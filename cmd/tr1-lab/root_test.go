@@ -30,6 +30,9 @@ func TestLabExecutableOwnsNonEndUserCommands(t *testing.T) {
 	if found, _, err := cmd.Find([]string{"programmes"}); err != nil || found == nil || found.Name() != "programmes" {
 		t.Fatalf("programmes command lookup failed: command=%v err=%v", found, err)
 	}
+	if found, _, err := cmd.Find([]string{"programmes", "transcribe"}); err != nil || found == nil || found.Name() != "transcribe" {
+		t.Fatalf("programmes transcribe command lookup failed: command=%v err=%v", found, err)
+	}
 	if found, _, err := cmd.Find([]string{"preview-local"}); err == nil && found != nil && found.Name() == "preview-local" {
 		t.Fatal("preview-local command is still registered")
 	}

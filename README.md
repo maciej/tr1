@@ -84,9 +84,13 @@ Fetch the TOK FM programme schedule from the official ramówka page:
 ```sh
 go run ./cmd/tr1-lab programmes tokfm
 go run ./cmd/tr1-lab programmes tokfm --format json
+go run ./cmd/tr1-lab programmes transcribe tokfm --backend mlx --model medium
+go run ./cmd/tr1-lab programmes transcribe tokfm --plan-only --priority-only
 ```
 
 Fetched entries are cached idempotently in SQLite at `$TR1_CACHE_DIR/programmes/programmes.sqlite` when `TR1_CACHE_DIR` is set, otherwise under the default tr1 cache root. Existing programme entries are skipped on later fetches.
+
+`programmes transcribe` combines the latest cached TOK FM schedule snapshot with cached recordings. It interprets schedule times in `Europe/Warsaw`, applies `--stream-delay` when the internet stream is known to lag the published schedule, cuts programme audio into `$TR1_CACHE_DIR/programmes/programme-audio-v1`, and stores JSON plus Markdown transcripts under `$TR1_CACHE_DIR/programmes/transcripts/programme-transcript-v1`. By default it groups overlapping schedule rows into broader programme blocks; pass `--window-mode segment` to experiment with individual schedule rows. Long programme audio is transcribed through cached 4-minute internal chunks controlled by `--transcribe-chunk-duration` while still producing one programme-level transcript. By default it also runs `pyannote.audio` speaker diarization and `codex exec -m gpt-5.4-mini` speaker/ad/music cleanup; use `--diarize=false` or `--speaker-map=false` to skip those stages. Pyannote needs a Python with pyannote installed and `PYANNOTE_AUTH_TOKEN`, `HF_TOKEN`, or `HUGGINGFACE_TOKEN` set; programme audio is converted to cached 16 kHz mono WAV before diarization. `--pyannote-device auto` is the default and prefers CUDA, then Apple Silicon MPS, then CPU; override it with `--pyannote-device cpu|mps|cuda`. Add `--pyannote-model` to choose a gated pyannote pipeline. The speaker/ad/music cleanup maps diarization labels to likely speaker names from the programme metadata and raw diarized transcript, then marks and removes advertising, sponsorship, autopromotion, station jingles, songs, and sung/music fragments in any language from the final Markdown while keeping the raw Whisper, diarization, mapping, and removed-block metadata in JSON.
 
 Recordings are written under the tr1 cache root: `$XDG_CACHE_HOME/tr1` when `XDG_CACHE_HOME` is set, otherwise `~/.cache/tr1` including on macOS. Files are grouped by station and UTC date:
 

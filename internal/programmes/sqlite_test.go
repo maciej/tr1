@@ -69,6 +69,49 @@ func TestSQLiteStoreIgnoresExistingEntries(t *testing.T) {
 	}
 }
 
+func TestSQLiteStoreLoadsLatestWholeScheduleSnapshot(t *testing.T) {
+	cacheRoot := t.TempDir()
+	path := CachePath(cacheRoot)
+	store := NewSQLiteStore(path)
+	oldSchedule := Schedule{
+		Station:   "TokFM",
+		SourceURL: "https://audycje.tokfm.pl/ramowka",
+		FetchedAt: "2026-05-20T12:00:00Z",
+		Entries: []Entry{
+			{DayIndex: 0, Day: "Monday", Time: "07:00", Programme: "Old"},
+		},
+	}
+	newSchedule := Schedule{
+		Station:   "TokFM",
+		SourceURL: "https://audycje.tokfm.pl/ramowka",
+		FetchedAt: "2026-05-21T12:00:00Z",
+		Entries: []Entry{
+			{DayIndex: 1, Day: "Tuesday", Time: "07:00", Programme: "New", Hosts: []string{"Host"}},
+			{DayIndex: 1, Day: "Tuesday", Time: "07:20", Programme: "Next"},
+		},
+	}
+	if _, err := store.PutSchedule(t.Context(), oldSchedule); err != nil {
+		t.Fatalf("old PutSchedule returned error: %v", err)
+	}
+	if _, err := store.PutSchedule(t.Context(), newSchedule); err != nil {
+		t.Fatalf("new PutSchedule returned error: %v", err)
+	}
+
+	got, err := store.LatestSchedule(t.Context(), "TokFM")
+	if err != nil {
+		t.Fatalf("LatestSchedule returned error: %v", err)
+	}
+	if got.FetchedAt != newSchedule.FetchedAt {
+		t.Fatalf("latest fetched_at = %q, want %q", got.FetchedAt, newSchedule.FetchedAt)
+	}
+	if len(got.Entries) != len(newSchedule.Entries) {
+		t.Fatalf("latest entries = %d, want %d", len(got.Entries), len(newSchedule.Entries))
+	}
+	if got.Entries[0].Programme != "New" || got.Entries[0].Hosts[0] != "Host" {
+		t.Fatalf("latest schedule entry was not restored: %#v", got.Entries[0])
+	}
+}
+
 func countRows(t *testing.T, path string) int {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
