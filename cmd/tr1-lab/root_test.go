@@ -2,13 +2,14 @@ package main
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"tr1/internal/programmes/tokfm"
 	"tr1/internal/tr1"
 )
 
@@ -47,10 +48,59 @@ func writeTestFile(path string, data []byte) error {
 
 func TestValidateProgrammesConfigRejectsUnsupportedStation(t *testing.T) {
 	cfg := tr1.DefaultConfig()
+	cfg.Station = "rmf"
+
+	if err := validateProgrammesConfig(cfg, "", "table", time.Second); err == nil {
+		t.Fatal("validateProgrammesConfig accepted unsupported station")
+	}
+}
+
+func TestValidateProgrammesConfigAcceptsBBC(t *testing.T) {
+	cfg := tr1.DefaultConfig()
 	cfg.Station = "bbc"
 
-	if err := validateProgrammesConfig(cfg, tokfm.DefaultScheduleURL, "table", time.Second); err == nil {
-		t.Fatal("validateProgrammesConfig accepted unsupported station")
+	if err := validateProgrammesConfig(cfg, "", "table", time.Second); err != nil {
+		t.Fatalf("validateProgrammesConfig rejected BBC: %v", err)
+	}
+}
+
+func TestProgrammesTranscribeAcceptsBBCSchedule(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "data": [
+    {
+      "id": "p0nf8w5y",
+      "urn": "urn:bbc:radio:episode:w1730nkmgdxjpp1",
+      "start": "2026-05-24T00:00:00Z",
+      "end": "2026-05-24T00:06:00Z",
+      "duration": 360,
+      "titles": {"primary": "BBC News", "secondary": "24/05/2026 00:01 GMT"},
+      "container": {"id": "p002vsmz", "title": "BBC News"}
+    }
+  ]
+}`))
+	}))
+	defer server.Close()
+
+	cmd := newLabCommand(t.Context())
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"programmes", "transcribe", "bbc",
+		"--source-url", server.URL,
+		"--cache-dir", t.TempDir(),
+		"--plan-only",
+		"--diarize=false",
+		"--speaker-map=false",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("programmes transcribe bbc returned error: %v", err)
+	}
+	if !strings.Contains(out.String(), "STATUS") {
+		t.Fatalf("programmes transcribe bbc output missing summary header:\n%s", out.String())
 	}
 }
 

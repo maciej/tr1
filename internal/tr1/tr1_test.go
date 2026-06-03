@@ -718,6 +718,41 @@ func TestProgrammeWindowsGroupScheduleRowsByProgrammeFamily(t *testing.T) {
 	}
 }
 
+func TestProgrammeWindowsUseUTCForBBCSchedule(t *testing.T) {
+	loc := time.UTC
+	schedule := programmes.Schedule{
+		Station:   "BBC World Service",
+		FetchedAt: "2026-05-24T12:00:00Z",
+		Entries: []programmes.Entry{
+			{DayIndex: 6, Day: "Sunday", Time: "00:00", Programme: "BBC News", Duration: "6 min"},
+			{DayIndex: 6, Day: "Sunday", Time: "00:06", Programme: "The Newsroom", Duration: "24 min"},
+		},
+	}
+
+	windows, err := programmeWindows(schedule, loc, ProgrammeTranscribeOptions{WindowMode: "segment"})
+	if err != nil {
+		t.Fatalf("programmeWindows returned error: %v", err)
+	}
+	if len(windows) != 2 {
+		t.Fatalf("programme window count = %d, want 2", len(windows))
+	}
+	if got, want := windows[0].StartUTC.Format(time.RFC3339), "2026-05-24T00:00:00Z"; got != want {
+		t.Fatalf("first BBC programme start UTC = %s, want %s", got, want)
+	}
+	if got, want := windows[0].Station, "bbc-world-service"; got != want {
+		t.Fatalf("BBC programme station slug = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultProgrammeTimezoneForStation(t *testing.T) {
+	if got := DefaultProgrammeTimezoneForStation("bbc"); got != "UTC" {
+		t.Fatalf("BBC default programme timezone = %q, want UTC", got)
+	}
+	if got := DefaultProgrammeTimezoneForStation("tokfm"); got != defaultProgrammeTimezone {
+		t.Fatalf("TokFM default programme timezone = %q, want %q", got, defaultProgrammeTimezone)
+	}
+}
+
 func TestDefaultProgrammeTranscribeOptionsRunFullPipeline(t *testing.T) {
 	opts := DefaultProgrammeTranscribeOptions()
 	if !opts.Diarize {

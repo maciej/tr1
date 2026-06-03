@@ -41,6 +41,7 @@ type ProgrammeTranscribeOptions struct {
 	Schedule          programmes.Schedule
 	Station           string
 	Timezone          string
+	TimezoneSet       bool
 	From              string
 	To                string
 	Limit             int
@@ -218,6 +219,14 @@ func DefaultProgrammeTranscribeOptions() ProgrammeTranscribeOptions {
 	}
 }
 
+func DefaultProgrammeTimezoneForStation(station string) string {
+	selected, err := lookupStation(station)
+	if err == nil && selected.Name == "BBC World Service" {
+		return "UTC"
+	}
+	return defaultProgrammeTimezone
+}
+
 func RunProgrammeTranscribe(w io.Writer, ctx context.Context, cfg Config, opts ProgrammeTranscribeOptions) error {
 	return runProgrammeTranscribe(w, ctx, cfg, opts)
 }
@@ -264,8 +273,12 @@ func runProgrammeTranscribe(w io.Writer, ctx context.Context, cfg Config, opts P
 	if opts.Station == "" {
 		opts.Station = cfg.Station
 	}
-	if opts.Timezone == "" {
-		opts.Timezone = defaultProgrammeTimezone
+	selected, err := lookupStation(opts.Station)
+	if err != nil {
+		return err
+	}
+	if opts.Timezone == "" || (!opts.TimezoneSet && opts.Timezone == defaultProgrammeTimezone) {
+		opts.Timezone = DefaultProgrammeTimezoneForStation(opts.Station)
 	}
 	if opts.CodexBin == "" {
 		opts.CodexBin = defaultProgrammeCodexBin
@@ -287,13 +300,6 @@ func runProgrammeTranscribe(w io.Writer, ctx context.Context, cfg Config, opts P
 	}
 	if err := ValidateProgrammeTranscribeConfig(cfg, opts); err != nil {
 		return err
-	}
-	selected, err := lookupStation(opts.Station)
-	if err != nil {
-		return err
-	}
-	if selected.Name != "TokFM" {
-		return fmt.Errorf("programme transcription is currently available for tokfm only")
 	}
 	cacheRoot, err := recordingCacheRoot(cfg)
 	if err != nil {
@@ -395,7 +401,7 @@ func runProgrammeTranscribe(w io.Writer, ctx context.Context, cfg Config, opts P
 				PreRollSeconds:     opts.PreRoll.Seconds(),
 				PostRollSeconds:    opts.PostRoll.Seconds(),
 				Confidence:         "medium",
-				Notes:              "Delay is explicit metadata. The local probe used for this cache showed TOK FM top-of-hour news at the expected wall-clock boundary, so 0s is reasonable for these recordings.",
+				Notes:              "Delay is explicit metadata. Use --stream-delay when the captured stream is known to lag or lead the published schedule.",
 			},
 			Audio: programmeAudioMeta{
 				Path:          audioPath,
@@ -1365,7 +1371,7 @@ func runCodexPrompt(ctx context.Context, opts ProgrammeTranscribeOptions, tmpPat
 
 func speakerMapPrompt(window programmeWindow, paragraphs []diarizedParagraph) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You map anonymous diarization speaker labels to real speaker names for a TOK FM programme.\n")
+	fmt.Fprintf(&b, "You map anonymous diarization speaker labels to real speaker names for a radio programme.\n")
 	fmt.Fprintf(&b, "Return only a compact JSON object mapping diarization labels to names, for example {\"SPEAKER_00\":\"Jan Nowak\"}. Use partial introductions such as first names or caller name plus city when that is all the programme gives. Ignore advertisements, station jingles, songs, sung lyrics, and music beds; labels used only for those should map to \"UNKNOWN\". Use \"UNKNOWN\" when there is not enough evidence.\n\n")
 	fmt.Fprintf(&b, "Programme: %s\n", window.Entry.Programme)
 	if window.Entry.Episode != "" {
@@ -1724,7 +1730,7 @@ func removedReasonLooksLikeMusic(reason string) bool {
 
 func programmeAdPostprocessPrompt(window programmeWindow, paragraphs []programmeMarkdownParagraph) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You clean a TOK FM programme transcript after transcription and diarization.\n")
+	fmt.Fprintf(&b, "You clean a radio programme transcript after transcription and diarization.\n")
 	fmt.Fprintf(&b, "Identify advertising, sponsorship, paid announcements, station autopromotion, cross-promotion, product/service offers, legal ad disclaimers, jingles, ad blocks, music beds, songs, sung lyrics, music-video/subtitle artifacts, and music-only transcript fragments in any language. Cues may include words like reklama, autopromocja, sponsor, advertisement, commercial break, promo, brought to you by, visit/buy/check our offer, brand slogans, prices, product claims, medical/supplement disclaimers, URLs, phone-number sales calls, lyrical lines, repeated choruses, singer-like English/Polish fragments, and paragraphs following a presenter introducing a track.\n")
 	fmt.Fprintf(&b, "Remove sung lyrics and music/jingle fragments even when Whisper transcribed them as normal words or pyannote assigned them to a speaker. Keep spoken presenter introductions to songs, artist facts, interviews about music, editorial discussion about advertising, politics, economy, brands, medicine, media, or commercials when it is programme content rather than a promotion. If unsure, keep it.\n")
 	fmt.Fprintf(&b, "Return only compact JSON with this shape: {\"remove\":[{\"id\":12,\"reason\":\"ad block\"}],\"rewrites\":[{\"id\":18,\"text\":\"speaker words after cutting embedded promo\",\"reason\":\"removed embedded promo\"}]}. Use rewrites only when a paragraph mixes programme content with ad/promotional content; preserve wording otherwise. Return empty arrays when nothing should be removed.\n\n")

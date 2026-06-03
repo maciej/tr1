@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"tr1/internal/programmes"
+	"tr1/internal/programmes/bbc"
 	"tr1/internal/programmes/tokfm"
 	"tr1/internal/tr1"
 )
@@ -117,7 +118,7 @@ func newLabCommand(ctx context.Context) *cobra.Command {
 }
 
 func newProgrammesCommand(ctx context.Context, cfg *tr1.Config) *cobra.Command {
-	sourceURL := getenv("TR1_PROGRAMME_SOURCE_URL", tokfm.DefaultScheduleURL)
+	sourceURL := strings.TrimSpace(os.Getenv("TR1_PROGRAMME_SOURCE_URL"))
 	format := getenv("TR1_PROGRAMME_FORMAT", "table")
 	timeout := durationFromEnv("TR1_PROGRAMME_TIMEOUT", defaultProgrammeTimeout)
 
@@ -137,7 +138,7 @@ func newProgrammesCommand(ctx context.Context, cfg *tr1.Config) *cobra.Command {
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
-			schedule, err := tokfm.Fetch(ctx, http.DefaultClient, sourceURL)
+			schedule, err := fetchProgrammeSchedule(ctx, http.DefaultClient, cfg.Station, sourceURL)
 			if err != nil {
 				return err
 			}
@@ -164,7 +165,7 @@ func newProgrammesCommand(ctx context.Context, cfg *tr1.Config) *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVarP(&cfg.Station, "station", "s", cfg.Station, "station alias or canonical name")
 	flags.StringVar(&format, "format", format, "output format: table or json")
-	flags.StringVar(&sourceURL, "source-url", sourceURL, "programme schedule page URL")
+	flags.StringVar(&sourceURL, "source-url", sourceURL, "programme schedule page/API URL; defaults depend on station")
 	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
 	flags.DurationVar(&timeout, "timeout", timeout, "HTTP timeout for programme schedule fetches")
 	cmd.AddCommand(newProgrammesTranscribeCommand(ctx, cfg, &sourceURL, &timeout))
@@ -176,18 +177,22 @@ func newProgrammesTranscribeCommand(ctx context.Context, cfg *tr1.Config, source
 	refreshSchedule := false
 	cmd := &cobra.Command{
 		Use:   "transcribe [station]",
-		Short: "Cut cached TOK FM recordings into programme windows and transcribe them",
+		Short: "Cut cached station recordings into programme windows and transcribe them",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := applyStationArg(cfg, args); err != nil {
 				return err
 			}
 			opts.Station = cfg.Station
+			opts.TimezoneSet = cmd.Flags().Changed("timezone")
+			if !opts.TimezoneSet {
+				opts.Timezone = tr1.DefaultProgrammeTimezoneForStation(cfg.Station)
+			}
 			markLanguageOverride(cfg, cmd)
 			if err := validateProgrammesConfig(*cfg, *sourceURL, "json", *timeout); err != nil {
 				return err
 			}
-			schedule, err := loadTokFMSchedule(ctx, *cfg, *sourceURL, *timeout, refreshSchedule)
+			schedule, err := loadProgrammeSchedule(ctx, *cfg, *sourceURL, *timeout, refreshSchedule)
 			if err != nil {
 				return err
 			}
@@ -232,18 +237,37 @@ func newProgrammesTranscribeCommand(ctx context.Context, cfg *tr1.Config, source
 	flags.StringVar(&opts.CodexModel, "codex-model", opts.CodexModel, "codex model used for speaker-name mapping")
 	flags.StringVar(sourceURL, "source-url", *sourceURL, "programme schedule page URL")
 	flags.DurationVar(timeout, "timeout", *timeout, "HTTP timeout for programme schedule fetches")
-	flags.BoolVar(&refreshSchedule, "refresh-schedule", refreshSchedule, "fetch the TOK FM schedule before transcribing")
+	flags.BoolVar(&refreshSchedule, "refresh-schedule", refreshSchedule, "fetch the station schedule before transcribing")
 	return cmd
 }
 
-func loadTokFMSchedule(ctx context.Context, cfg tr1.Config, sourceURL string, timeout time.Duration, refresh bool) (programmes.Schedule, error) {
+func fetchProgrammeSchedule(ctx context.Context, client *http.Client, stationAlias, sourceURL string) (programmes.Schedule, error) {
+	selected, err := tr1.LookupStation(stationAlias)
+	if err != nil {
+		return programmes.Schedule{}, err
+	}
+	switch selected.Name {
+	case "TokFM":
+		return tokfm.Fetch(ctx, client, sourceURL)
+	case "BBC World Service":
+		return bbc.Fetch(ctx, client, sourceURL)
+	default:
+		return programmes.Schedule{}, fmt.Errorf("programme schedules are currently available for tokfm and bbc only")
+	}
+}
+
+func loadProgrammeSchedule(ctx context.Context, cfg tr1.Config, sourceURL string, timeout time.Duration, refresh bool) (programmes.Schedule, error) {
+	selected, err := tr1.LookupStation(cfg.Station)
+	if err != nil {
+		return programmes.Schedule{}, err
+	}
 	cacheRoot, err := tr1.CacheRoot(cfg.CacheDir)
 	if err != nil {
 		return programmes.Schedule{}, err
 	}
 	store := programmes.NewSQLiteStore(programmes.CachePath(cacheRoot))
 	if !refresh {
-		schedule, err := store.LatestSchedule(ctx, "TokFM")
+		schedule, err := store.LatestSchedule(ctx, selected.Name)
 		if err == nil {
 			status(cfg, "programme-cache", "using cached schedule fetched at "+schedule.FetchedAt)
 			return schedule, nil
@@ -252,7 +276,7 @@ func loadTokFMSchedule(ctx context.Context, cfg tr1.Config, sourceURL string, ti
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	schedule, err := tokfm.Fetch(fetchCtx, http.DefaultClient, sourceURL)
+	schedule, err := fetchProgrammeSchedule(fetchCtx, http.DefaultClient, cfg.Station, sourceURL)
 	if err != nil {
 		return programmes.Schedule{}, err
 	}
@@ -269,16 +293,15 @@ func validateProgrammesConfig(cfg tr1.Config, sourceURL, format string, timeout 
 	if err != nil {
 		return err
 	}
-	if selected.Name != "TokFM" {
-		return fmt.Errorf("programme schedules are currently available for tokfm only")
+	switch selected.Name {
+	case "TokFM", "BBC World Service":
+	default:
+		return fmt.Errorf("programme schedules are currently available for tokfm and bbc only")
 	}
 	switch strings.ToLower(strings.TrimSpace(format)) {
 	case "", "table", "json":
 	default:
 		return fmt.Errorf("--format must be one of: table, json")
-	}
-	if strings.TrimSpace(sourceURL) == "" {
-		return fmt.Errorf("--source-url must not be empty")
 	}
 	if timeout < time.Second {
 		return fmt.Errorf("--timeout must be at least 1s")
