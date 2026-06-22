@@ -89,7 +89,7 @@ func TestProgrammesTranscribeAcceptsBBCSchedule(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{
 		"programmes", "transcribe", "bbc",
-		"--source-url", server.URL,
+		"--source-url", server.URL + "?date=2026-05-24",
 		"--cache-dir", t.TempDir(),
 		"--plan-only",
 		"--diarize=false",

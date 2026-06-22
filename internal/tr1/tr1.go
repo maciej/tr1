@@ -1633,6 +1633,9 @@ func recordingCacheRoot(cfg Config) (string, error) {
 	if cfg.CacheDir != "" {
 		return cfg.CacheDir, nil
 	}
+	if cacheDir := os.Getenv("TR1_CACHE_DIR"); cacheDir != "" {
+		return cacheDir, nil
+	}
 	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
 		return filepath.Join(xdg, "tr1"), nil
 	}
