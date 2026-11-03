@@ -111,9 +111,11 @@ func insertSnapshot(ctx context.Context, db *sql.DB, schedule Schedule) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `INSERT OR IGNORE INTO programme_schedule_snapshots (
+	_, err = db.ExecContext(ctx, `INSERT INTO programme_schedule_snapshots (
 		station, source_url, fetched_at, entries_json, content_hash
-	) VALUES (?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?)
+	ON CONFLICT(content_hash) DO UPDATE SET fetched_at = excluded.fetched_at
+	WHERE excluded.fetched_at > programme_schedule_snapshots.fetched_at`,
 		schedule.Station,
 		schedule.SourceURL,
 		schedule.FetchedAt,

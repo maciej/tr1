@@ -125,3 +125,40 @@ func countRows(t *testing.T, path string) int {
 	}
 	return count
 }
+
+func TestSQLiteStoreRefreshesRepeatedSchedule(t *testing.T) {
+	store := NewSQLiteStore(CachePath(t.TempDir()))
+	schedule := Schedule{
+		Station: "TokFM", FetchedAt: "2026-05-21T12:00:00Z",
+		Entries: []Entry{{DayIndex: 0, Time: "07:00", Programme: "Morning"}},
+	}
+	if _, err := store.PutSchedule(t.Context(), schedule); err != nil {
+		t.Fatal(err)
+	}
+	old := schedule
+	other := schedule
+	other.FetchedAt = "2026-05-22T12:00:00Z"
+	other.Entries = []Entry{{DayIndex: 0, Time: "08:00", Programme: "Other"}}
+	if _, err := store.PutSchedule(t.Context(), other); err != nil {
+		t.Fatal(err)
+	}
+	schedule.FetchedAt = "2026-05-28T12:00:00Z"
+	result, err := store.PutSchedule(t.Context(), schedule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NewEntries != 0 {
+		t.Fatalf("repeat inserted %d entries", result.NewEntries)
+	}
+	// An older observation must not roll the refreshed snapshot back.
+	if _, err := store.PutSchedule(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	got, err := store.LatestSchedule(t.Context(), schedule.Station)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FetchedAt != schedule.FetchedAt || got.Entries[0].Programme != "Morning" {
+		t.Fatalf("latest schedule = %+v, want refreshed Morning schedule", got)
+	}
+}

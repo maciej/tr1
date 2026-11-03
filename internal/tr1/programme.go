@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -506,6 +507,14 @@ func programmeWindows(schedule programmes.Schedule, loc *time.Location, opts Pro
 	weekMonday := midnightInLocation(fetchedLocal.AddDate(0, 0, -weekdayIndex(fetchedLocal.Weekday())), loc)
 	var entries []datedProgrammeEntry
 	for _, entry := range schedule.Entries {
+		if entry.StartUTC != "" {
+			start, err := time.Parse(time.RFC3339Nano, entry.StartUTC)
+			if err != nil {
+				return nil, fmt.Errorf("programme start_utc %q is not RFC3339: %w", entry.StartUTC, err)
+			}
+			entries = append(entries, datedProgrammeEntry{entry: entry, startLocal: start.In(loc)})
+			continue
+		}
 		if entry.DayIndex < 0 || entry.DayIndex > 6 {
 			continue
 		}
@@ -757,6 +766,7 @@ func windowsWithCoverage(windows []programmeWindow, spans []recordingSpan, minDu
 		}
 		window.CoverageStart = start
 		window.CoverageEnd = end
+		window.ID = programmeAssetID(window, spans)
 		if start.Equal(originalStart) && end.Equal(originalEnd) {
 			window.CoverageStatus = "full"
 		} else {
@@ -765,6 +775,27 @@ func windowsWithCoverage(windows []programmeWindow, spans []recordingSpan, minDu
 		out = append(out, window)
 	}
 	return out
+}
+
+// All derived assets share this identity, so a new cut also gets fresh transcript
+// chunks, diarization input and diarization output.
+func programmeAssetID(window programmeWindow, spans []recordingSpan) string {
+	type source struct {
+		Path       string
+		Start, End time.Time
+	}
+	var sources []source
+	for _, span := range overlappingSpans(spans, window.AudioStartUTC, window.AudioEndUTC) {
+		sources = append(sources, source{span.Path, span.StartUTC.UTC(), span.EndUTC.UTC()})
+	}
+	data, _ := json.Marshal(struct {
+		Entry                            programmes.Entry
+		Start, End, AudioStart, AudioEnd time.Time
+		Sources                          []source
+	}{window.Entry, window.StartUTC.UTC(), window.EndUTC.UTC(),
+		window.AudioStartUTC.UTC(), window.AudioEndUTC.UTC(), sources})
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%s-%x", programmeWindowID(window), sum[:16])
 }
 
 func coverageForWindow(spans []recordingSpan, start, end time.Time) (time.Time, time.Time, bool) {
