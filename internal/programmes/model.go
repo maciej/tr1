@@ -10,6 +10,7 @@ type Schedule struct {
 }
 
 type Entry struct {
+	StartUTC     string   `json:"start_utc,omitempty"`
 	DayIndex     int      `json:"day_index"`
 	Day          string   `json:"day"`
 	Time         string   `json:"time"`

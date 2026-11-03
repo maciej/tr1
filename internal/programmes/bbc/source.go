@@ -160,6 +160,7 @@ func parseBroadcast(item broadcast) (programmes.Entry, time.Time, time.Time, boo
 	}
 	weekday := start.UTC().Weekday()
 	entry := programmes.Entry{
+		StartUTC:     start.UTC().Format(time.RFC3339Nano),
 		DayIndex:     weekdayIndex(weekday),
 		Day:          weekday.String(),
 		Time:         start.UTC().Format("15:04"),
