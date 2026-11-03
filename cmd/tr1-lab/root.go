@@ -166,7 +166,7 @@ func newProgrammesCommand(ctx context.Context, cfg *tr1.Config) *cobra.Command {
 	flags.StringVarP(&cfg.Station, "station", "s", cfg.Station, "station alias or canonical name")
 	flags.StringVar(&format, "format", format, "output format: table or json")
 	flags.StringVar(&sourceURL, "source-url", sourceURL, "programme schedule page/API URL; defaults depend on station")
-	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $TR1_CACHE_DIR, $XDG_CACHE_HOME/tr1, or ~/.cache/tr1")
 	flags.DurationVar(&timeout, "timeout", timeout, "HTTP timeout for programme schedule fetches")
 	cmd.AddCommand(newProgrammesTranscribeCommand(ctx, cfg, &sourceURL, &timeout))
 	return cmd
@@ -205,7 +205,7 @@ func newProgrammesTranscribeCommand(ctx context.Context, cfg *tr1.Config, source
 		},
 	}
 	flags := cmd.Flags()
-	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $TR1_CACHE_DIR, $XDG_CACHE_HOME/tr1, or ~/.cache/tr1")
 	flags.StringVar(&cfg.Model, "model", cfg.Model, "Whisper model")
 	flags.StringVar(&cfg.Language, "language", cfg.Language, "Whisper language; defaults to the recording station language when known")
 	flags.StringVar(&cfg.Backend, "backend", cfg.Backend, "transcription backend: auto, cpu, or mlx")
@@ -338,7 +338,7 @@ func addRecordFlags(cmd *cobra.Command, cfg *tr1.Config) {
 	flags := cmd.Flags()
 	flags.StringVarP(&cfg.Station, "station", "s", cfg.Station, "station alias or canonical name ("+tr1.StationHelp()+")")
 	flags.StringVar(&cfg.StreamURL, "stream-url", cfg.StreamURL, "radio stream or playlist URL; overrides --station")
-	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $TR1_CACHE_DIR, $XDG_CACHE_HOME/tr1, or ~/.cache/tr1")
 	flags.DurationVar(&cfg.RecordSegment, "segment-duration", cfg.RecordSegment, "recording chunk duration")
 	flags.DurationVar(&cfg.RecordRestart, "restart-delay", cfg.RecordRestart, "delay before restarting ffmpeg after stream failure")
 	flags.StringVar(&cfg.FFmpegBin, "ffmpeg-bin", cfg.FFmpegBin, "ffmpeg executable")
@@ -347,12 +347,12 @@ func addRecordFlags(cmd *cobra.Command, cfg *tr1.Config) {
 func addRecordListFlags(cmd *cobra.Command, cfg *tr1.Config, station *string) {
 	flags := cmd.Flags()
 	flags.StringVarP(station, "station", "s", "", "station alias or canonical name; omit to list all stations")
-	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $TR1_CACHE_DIR, $XDG_CACHE_HOME/tr1, or ~/.cache/tr1")
 }
 
 func addRecordTranscribeFlags(cmd *cobra.Command, cfg *tr1.Config) {
 	flags := cmd.Flags()
-	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $XDG_CACHE_HOME/tr1 or ~/.cache/tr1")
+	flags.StringVar(&cfg.CacheDir, "cache-dir", cfg.CacheDir, "cache directory; defaults to $TR1_CACHE_DIR, $XDG_CACHE_HOME/tr1, or ~/.cache/tr1")
 	flags.StringVar(&cfg.Model, "model", cfg.Model, "Whisper model")
 	flags.StringVar(&cfg.Language, "language", cfg.Language, "Whisper language; defaults to the recording station language when known")
 	flags.StringVar(&cfg.Backend, "backend", cfg.Backend, "transcription backend: auto, cpu, or mlx")

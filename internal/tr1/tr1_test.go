@@ -458,6 +458,21 @@ func TestRecordingCacheRootUsesXDGCacheHome(t *testing.T) {
 	}
 }
 
+func TestRecordingCacheRootUsesEnvCacheDirBeforeXDGCacheHome(t *testing.T) {
+	cacheRoot := t.TempDir()
+	cacheHome := t.TempDir()
+	t.Setenv("TR1_CACHE_DIR", cacheRoot)
+	t.Setenv("XDG_CACHE_HOME", cacheHome)
+
+	got, err := recordingCacheRoot(Config{})
+	if err != nil {
+		t.Fatalf("recordingCacheRoot returned error: %v", err)
+	}
+	if got != cacheRoot {
+		t.Fatalf("recording cache root = %q, want TR1_CACHE_DIR root %q", got, cacheRoot)
+	}
+}
+
 func TestRecordingCacheRootUsesExplicitCacheDirAsRoot(t *testing.T) {
 	cacheRoot := t.TempDir()
 
